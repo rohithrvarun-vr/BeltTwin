@@ -1,0 +1,10 @@
+﻿_Boot/
+_CompileInfo/
+_Deployment/
+_Libraries/
+*.tpy
+*.tmc
+*.compileinfo
+*.user
+*.suo
+.vs/

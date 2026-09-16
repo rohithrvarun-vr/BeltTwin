@@ -1,0 +1,322 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
+  <POU Name="MAIN" Id="{14822338-0f92-4154-bb06-25c11b40a368}" SpecialFunc="None">
+    <Declaration><![CDATA[PROGRAM MAIN
+VAR
+    // ---------------- exposed to OPC UA ----------------
+    {attribute 'OPC.UA.DA' := '1'}
+    eState          : E_ConveyorState := Stopped;
+    {attribute 'OPC.UA.DA' := '1'}
+    rSpeed          : REAL;
+    {attribute 'OPC.UA.DA' := '1'}
+    rSpeedRequest   : REAL := 80.0;
+    {attribute 'OPC.UA.DA' := '1'}
+    rPosition       : REAL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bStartCmd       : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bStopCmd        : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bResetCmd       : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bFaultInject    : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bWearInject     : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bJamInject      : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bSlipInject     : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bOverloadInject : BOOL;
+
+    {attribute 'OPC.UA.DA' := '1'}
+    nStartCount     : UDINT;
+    {attribute 'OPC.UA.DA' := '1'}
+    nStopCount      : UDINT;
+    {attribute 'OPC.UA.DA' := '1'}
+    nResetCount     : UDINT;
+    {attribute 'OPC.UA.DA' := '1'}
+    nFaultCount     : UDINT;
+    {attribute 'OPC.UA.DA' := '1'}
+    nPlcTime        : UDINT;
+    {attribute 'OPC.UA.DA' := '1'}
+    eFaultCode      : INT;
+
+    // ---------------- sensors ----------------
+    {attribute 'OPC.UA.DA' := '1'}
+    rMotorCurrent   : REAL;
+    {attribute 'OPC.UA.DA' := '1'}
+    rMotorTemp      : REAL := 22.0;
+    {attribute 'OPC.UA.DA' := '1'}
+    rBearingTemp    : REAL := 22.0;
+    {attribute 'OPC.UA.DA' := '1'}
+    rVibration      : REAL;
+    {attribute 'OPC.UA.DA' := '1'}
+    rAmbientTemp    : REAL := 22.0;
+
+    // ---------------- hidden internals ----------------
+    rTargetSpeed    : REAL;
+    rBeltSpeed      : REAL;
+    rBearingWear    : REAL;
+    rJamSeverity    : REAL;
+    rSlipSeverity   : REAL;
+    rOverloadLevel  : REAL;
+    rWearRate       : REAL;
+    rJamRate        : REAL;
+    rSlipRate       : REAL;
+    rOverloadRate   : REAL;
+    rNoisePhase     : REAL;
+    rNoise          : REAL;
+
+    rCurrentTarget  : REAL;
+    rMotorTarget    : REAL;
+    rBearingTarget  : REAL;
+
+    // ---------------- edge detection ----------------
+    fbStartTrig     : R_TRIG;
+    fbStopTrig      : R_TRIG;
+    fbResetTrig     : R_TRIG;
+    fbFaultTrig     : R_TRIG;
+    fbWearTrig      : R_TRIG;
+    fbJamTrig       : R_TRIG;
+    fbSlipTrig      : R_TRIG;
+    fbOverloadTrig  : R_TRIG;
+    bStartEdge      : BOOL;
+    bStopEdge       : BOOL;
+    bResetEdge      : BOOL;
+    bFaultEdge      : BOOL;
+    bWearEdge       : BOOL;
+    bJamEdge        : BOOL;
+    bSlipEdge       : BOOL;
+    bOverloadEdge   : BOOL;
+END_VAR
+
+VAR CONSTANT
+    CYCLE_T         : REAL := 0.01;
+    RAMP_PER_SCAN   : REAL := 0.5;
+    POS_WRAP        : REAL := 1000.0;
+
+    CUR_IDLE        : REAL := 2.0;
+    CUR_PER_SPEED   : REAL := 0.0875;
+    MOTOR_PER_SPEED : REAL := 0.5;
+    BEAR_PER_SPEED  : REAL := 0.175;
+    VIB_BASE        : REAL := 0.2;
+    VIB_PER_SPEED   : REAL := 0.025;
+
+    K_MOTOR         : REAL := 0.000167;
+    K_BEARING       : REAL := 0.0000833;
+    K_CURRENT       : REAL := 0.02;
+
+    WEAR_RATE       : REAL := 0.00002;
+    JAM_RATE        : REAL := 0.004;
+    SLIP_RATE       : REAL := 0.0003;
+    OVERLOAD_RATE   : REAL := 0.00015;
+    FAULT_THRESHOLD : REAL := 0.8;
+END_VAR]]></Declaration>
+    <Implementation>
+      <ST><![CDATA[// ---------------- 0. housekeeping ----------------
+nPlcTime := DWORD_TO_UDINT(TIME_TO_DWORD(TIME()));
+
+rNoisePhase := rNoisePhase + CYCLE_T;
+IF rNoisePhase > 1000.0 THEN
+    rNoisePhase := rNoisePhase - 1000.0;
+END_IF
+rNoise := LREAL_TO_REAL( SIN(rNoisePhase * 3.7) * 0.5
+                       + SIN(rNoisePhase * 11.3) * 0.3 );
+
+// ---------------- 1. edge detection ----------------
+fbStartTrig(CLK := bStartCmd);
+fbStopTrig(CLK := bStopCmd);
+fbResetTrig(CLK := bResetCmd);
+fbFaultTrig(CLK := bFaultInject);
+fbWearTrig(CLK := bWearInject);
+fbJamTrig(CLK := bJamInject);
+fbSlipTrig(CLK := bSlipInject);
+fbOverloadTrig(CLK := bOverloadInject);
+
+bStartEdge    := fbStartTrig.Q;
+bStopEdge     := fbStopTrig.Q;
+bResetEdge    := fbResetTrig.Q;
+bFaultEdge    := fbFaultTrig.Q;
+bWearEdge     := fbWearTrig.Q;
+bJamEdge      := fbJamTrig.Q;
+bSlipEdge     := fbSlipTrig.Q;
+bOverloadEdge := fbOverloadTrig.Q;
+
+IF bStartEdge THEN nStartCount := nStartCount + 1; END_IF
+IF bStopEdge  THEN nStopCount  := nStopCount  + 1; END_IF
+IF bResetEdge THEN nResetCount := nResetCount + 1; END_IF
+IF bFaultEdge THEN nFaultCount := nFaultCount + 1; END_IF
+
+IF bWearEdge     THEN rWearRate     := WEAR_RATE;     END_IF
+IF bJamEdge      THEN rJamRate      := JAM_RATE;      END_IF
+IF bSlipEdge     THEN rSlipRate     := SLIP_RATE;     END_IF
+IF bOverloadEdge THEN rOverloadRate := OVERLOAD_RATE; END_IF
+
+bStartCmd       := FALSE;
+bStopCmd        := FALSE;
+bResetCmd       := FALSE;
+bFaultInject    := FALSE;
+bWearInject     := FALSE;
+bJamInject      := FALSE;
+bSlipInject     := FALSE;
+bOverloadInject := FALSE;
+
+// ---------------- 2. speed request -> target ----------------
+IF rSpeedRequest > 80.0 THEN
+    rTargetSpeed := 80.0;
+ELSIF rSpeedRequest < 0.0 THEN
+    rTargetSpeed := 0.0;
+ELSE
+    rTargetSpeed := rSpeedRequest;
+END_IF
+
+// ---------------- 3. fault accumulation ----------------
+IF eState = Running THEN
+    rBearingWear   := rBearingWear   + rWearRate;
+    rJamSeverity   := rJamSeverity   + rJamRate;
+    rSlipSeverity  := rSlipSeverity  + rSlipRate;
+    rOverloadLevel := rOverloadLevel + rOverloadRate;
+END_IF
+
+IF rBearingWear   > 1.0 THEN rBearingWear   := 1.0; END_IF
+IF rJamSeverity   > 1.0 THEN rJamSeverity   := 1.0; END_IF
+IF rSlipSeverity  > 1.0 THEN rSlipSeverity  := 1.0; END_IF
+IF rOverloadLevel > 1.0 THEN rOverloadLevel := 1.0; END_IF
+
+// ---------------- 4. state machine ----------------
+CASE eState OF
+
+    Stopped:
+        rSpeed := 0.0;
+        IF bStartEdge THEN
+            eFaultCode     := 0;
+            rBearingWear   := 0.0;
+            rJamSeverity   := 0.0;
+            rSlipSeverity  := 0.0;
+            rOverloadLevel := 0.0;
+            rWearRate      := 0.0;
+            rJamRate       := 0.0;
+            rSlipRate      := 0.0;
+            rOverloadRate  := 0.0;
+            eState := Starting;
+        END_IF
+
+    Starting:
+        rSpeed := rSpeed + RAMP_PER_SCAN;
+        IF rSpeed >= rTargetSpeed THEN
+            rSpeed := rTargetSpeed;
+            eState := Running;
+        END_IF
+        IF bStopEdge THEN
+            eState := Stopped;
+        END_IF
+
+    Running:
+        rSpeed := rTargetSpeed;
+
+        IF bStopEdge THEN
+            eState := Stopped;
+        ELSIF bFaultEdge THEN
+            eFaultCode := 5;
+            eState := Faulted;
+        ELSIF rJamSeverity >= FAULT_THRESHOLD THEN
+            eFaultCode := 1;
+            eState := Faulted;
+        ELSIF rSlipSeverity >= FAULT_THRESHOLD THEN
+            eFaultCode := 2;
+            eState := Faulted;
+        ELSIF rBearingWear >= FAULT_THRESHOLD THEN
+            eFaultCode := 3;
+            eState := Faulted;
+        ELSIF rOverloadLevel >= FAULT_THRESHOLD THEN
+            eFaultCode := 4;
+            eState := Faulted;
+        END_IF
+
+    Faulted:
+        rSpeed := 0.0;
+        IF bResetEdge THEN
+            eFaultCode     := 0;
+            rBearingWear   := 0.0;
+            rJamSeverity   := 0.0;
+            rSlipSeverity  := 0.0;
+            rOverloadLevel := 0.0;
+            rWearRate      := 0.0;
+            rJamRate       := 0.0;
+            rSlipRate      := 0.0;
+            rOverloadRate  := 0.0;
+            eState := Stopped;
+        END_IF
+
+END_CASE
+
+// ---------------- 5. belt kinematics ----------------
+rBeltSpeed := rSpeed * (1.0 - rJamSeverity) * (1.0 - rSlipSeverity * 0.6);
+IF rBeltSpeed < 0.0 THEN
+    rBeltSpeed := 0.0;
+END_IF
+
+rPosition := rPosition + rBeltSpeed * CYCLE_T;
+IF rPosition >= POS_WRAP THEN
+    rPosition := rPosition - POS_WRAP;
+END_IF
+
+// ---------------- 6. sensor model ----------------
+rCurrentTarget := CUR_IDLE
+                + rSpeed * CUR_PER_SPEED
+                + rJamSeverity * 14.0
+                + rOverloadLevel * 6.0
+                - rSlipSeverity * 1.5;
+
+IF (eState = Stopped) OR (eState = Faulted) THEN
+    rCurrentTarget := 0.0;
+END_IF
+
+rMotorCurrent := rMotorCurrent + (rCurrentTarget - rMotorCurrent) * K_CURRENT;
+rMotorCurrent := rMotorCurrent + rNoise * 0.08;
+IF rMotorCurrent < 0.0 THEN
+    rMotorCurrent := 0.0;
+END_IF
+
+rMotorTarget := rAmbientTemp
+              + rSpeed * MOTOR_PER_SPEED
+              + rOverloadLevel * 35.0
+              + rJamSeverity * 10.0;
+
+IF (eState = Stopped) OR (eState = Faulted) THEN
+    rMotorTarget := rAmbientTemp;
+END_IF
+
+rMotorTemp := rMotorTemp + (rMotorTarget - rMotorTemp) * K_MOTOR;
+
+rBearingTarget := rAmbientTemp
+                + rSpeed * BEAR_PER_SPEED
+                + rBearingWear * 28.0
+                + rSlipSeverity * 8.0;
+
+IF (eState = Stopped) OR (eState = Faulted) THEN
+    rBearingTarget := rAmbientTemp;
+END_IF
+
+rBearingTemp := rBearingTemp + (rBearingTarget - rBearingTemp) * K_BEARING;
+
+rVibration := VIB_BASE
+            + rSpeed * VIB_PER_SPEED
+            + rBearingWear * 4.5
+            + rJamSeverity * 7.0
+            + rSlipSeverity * 2.5
+            + rOverloadLevel * 1.2;
+
+IF (eState = Stopped) OR (eState = Faulted) THEN
+    rVibration := 0.0;
+ELSE
+    rVibration := rVibration + rNoise * 0.06;
+END_IF
+
+IF rVibration < 0.0 THEN
+    rVibration := 0.0;
+END_IF]]></ST>
+    </Implementation>
+  </POU>
+</TcPlcObject>
