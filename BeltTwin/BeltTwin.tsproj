@@ -9,8 +9,8 @@
 			</Tasks>
 		</System>
 		<Plc>
-			<Project GUID="{AD3010D9-904B-4828-87DD-4C60EF8D28A6}" Name="BeltLogic" PrjFilePath="BeltLogic\BeltLogic.plcproj" TmcFilePath="BeltLogic\BeltLogic.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{CF197876-A536-F531-FE49-923AA8E80DDD}">
+			<Project GUID="{AD3010D9-904B-4828-87DD-4C60EF8D28A6}" Name="BeltLogic" PrjFilePath="BeltLogic\BeltLogic.plcproj" TmcFilePath="BeltLogic\BeltLogic.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" CopyTmcToTarget="true" CopyTpyToTarget="false" SymbolicMapping="true">
+				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{40421DFB-7125-4A07-074F-7BAF46F70A04}" TmcPath="BeltLogic\BeltLogic.tmc">
 					<Name>BeltLogic Instance</Name>
 					<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 					<Contexts>

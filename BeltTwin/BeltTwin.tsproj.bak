@@ -3,14 +3,14 @@
 	<Project ProjectGUID="{C291830F-38D1-44B8-A67F-0C807EC0CE99}" Target64Bit="true" ShowHideConfigurations="#x6">
 		<System>
 			<Tasks>
-				<Task Id="3" Priority="20" CycleTime="100000" AmsPort="350" AdtTasks="true">
+				<Task Id="3" CreateSymbols="true" Priority="20" CycleTime="100000" AmsPort="350" AdtTasks="true">
 					<Name>PlcTask</Name>
 				</Task>
 			</Tasks>
 		</System>
 		<Plc>
 			<Project GUID="{AD3010D9-904B-4828-87DD-4C60EF8D28A6}" Name="BeltLogic" PrjFilePath="BeltLogic\BeltLogic.plcproj" TmcFilePath="BeltLogic\BeltLogic.tmc" ReloadTmc="true" AmsPort="851" FileArchiveSettings="#x000e" SymbolicMapping="true">
-				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{CF197876-A536-F531-FE49-923AA8E80DDD}">
+				<Instance Id="#x08502000" TcSmClass="TComPlcObjDef" KeepUnrestoredLinks="2" TmcHash="{40421DFB-7125-4A07-074F-7BAF46F70A04}" TmcPath="BeltLogic\BeltLogic.tmc">
 					<Name>BeltLogic Instance</Name>
 					<CLSID ClassFactory="TcPlc30">{08500001-0000-0000-F000-000000000064}</CLSID>
 					<Contexts>
