@@ -1,0 +1,229 @@
+[
+    {
+        "id": "f89b1c973aecd9bd",
+        "type": "tab",
+        "label": "Flow 1",
+        "disabled": false,
+        "info": "",
+        "env": []
+    },
+    {
+        "id": "test_tab",
+        "type": "tab",
+        "label": "OPCUA Test"
+    },
+    {
+        "id": "a147a49a525f37d6",
+        "type": "OpcUa-Endpoint",
+        "name": "ConveyorTwin",
+        "endpoint": "opc.tcp://Varun_Rohith:4840",
+        "secpol": "Basic256Sha256",
+        "secmode": "SignAndEncrypt",
+        "none": false,
+        "login": true,
+        "usercert": false,
+        "usercertificate": "",
+        "userprivatekey": ""
+    },
+    {
+        "id": "3ad83016fd169ff9",
+        "type": "inject",
+        "z": "f89b1c973aecd9bd",
+        "name": "",
+        "props": [
+            {
+                "p": "payload"
+            },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": 0.1,
+        "topic": "ns=4;s=MAIN.rSpeed",
+        "payload": "1000",
+        "payloadType": "num",
+        "x": 160,
+        "y": 60,
+        "wires": [
+            [
+                "5d59eb76d42f3389"
+            ]
+        ]
+    },
+    {
+        "id": "d87dfc17eeea5893",
+        "type": "debug",
+        "z": "f89b1c973aecd9bd",
+        "name": "debug 1",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 880,
+        "y": 60,
+        "wires": []
+    },
+    {
+        "id": "693498b56faaaa27",
+        "type": "OpcUa-Client",
+        "z": "f89b1c973aecd9bd",
+        "endpoint": "a147a49a525f37d6",
+        "action": "subscribe",
+        "deadbandtype": "a",
+        "deadbandvalue": 1,
+        "time": 10,
+        "timeUnit": "s",
+        "certificate": "n",
+        "localfile": "",
+        "localkeyfile": "",
+        "securitymode": "None",
+        "securitypolicy": "None",
+        "useTransport": false,
+        "maxChunkCount": 1,
+        "maxMessageSize": 8192,
+        "receiveBufferSize": 8192,
+        "sendBufferSize": 8192,
+        "setstatusandtime": true,
+        "keepsessionalive": false,
+        "name": "",
+        "applicationName": "",
+        "applicationUri": "",
+        "x": 580,
+        "y": 60,
+        "wires": [
+            [],
+            [
+                "d87dfc17eeea5893"
+            ],
+            [
+                "c5de97cfee6a1599"
+            ]
+        ]
+    },
+    {
+        "id": "5d59eb76d42f3389",
+        "type": "OpcUa-Item",
+        "z": "f89b1c973aecd9bd",
+        "item": "ns=4;s=MAIN.rSpeed",
+        "datatype": "Double",
+        "value": "",
+        "name": "",
+        "x": 380,
+        "y": 60,
+        "wires": [
+            [
+                "693498b56faaaa27"
+            ]
+        ]
+    },
+    {
+        "id": "c5de97cfee6a1599",
+        "type": "debug",
+        "z": "f89b1c973aecd9bd",
+        "name": "debug 2",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 540,
+        "y": 160,
+        "wires": []
+    },
+    {
+        "id": "opcua_test_inject",
+        "type": "inject",
+        "z": "test_tab",
+        "name": "Subscribe",
+        "props": [
+            {
+                "p": "topic",
+                "vt": "str"
+            },
+            {
+                "p": "payload"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": true,
+        "onceDelay": "0.5",
+        "topic": "ns=4;s=MAIN.rPosition",
+        "payload": "1000",
+        "payloadType": "num",
+        "x": 150,
+        "y": 100,
+        "wires": [
+            [
+                "opcua_test_client"
+            ]
+        ]
+    },
+    {
+        "id": "opcua_test_client",
+        "type": "OpcUa-Client",
+        "z": "test_tab",
+        "endpoint": "a147a49a525f37d6",
+        "action": "subscribe",
+        "deadbandtype": "a",
+        "deadbandvalue": 1,
+        "time": 10,
+        "timeUnit": "s",
+        "certificate": "n",
+        "localfile": "",
+        "localkeyfile": "",
+        "securitymode": "None",
+        "securitypolicy": "None",
+        "useTransport": false,
+        "maxChunkCount": "",
+        "maxMessageSize": "",
+        "receiveBufferSize": "",
+        "sendBufferSize": "",
+        "setstatusandtime": false,
+        "keepsessionalive": false,
+        "name": "",
+        "applicationName": "",
+        "applicationUri": "",
+        "x": 350,
+        "y": 100,
+        "wires": [
+            [
+                "opcua_test_debug"
+            ],
+            [
+                "opcua_test_debug"
+            ],
+            []
+        ]
+    },
+    {
+        "id": "opcua_test_debug",
+        "type": "debug",
+        "z": "test_tab",
+        "name": "",
+        "active": true,
+        "tosidebar": true,
+        "complete": "true",
+        "x": 550,
+        "y": 100,
+        "wires": []
+    },
+    {
+        "id": "7ace639d4e727ceb",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-contrib-opcua": "0.2.354"
+        }
+    }
+]
