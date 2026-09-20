@@ -69,6 +69,7 @@ VAR
     rNoise          : REAL;
 
     rCurrentTarget  : REAL;
+    rCurrentClean   : REAL;        // NEW: noise-free filtered current state
     rMotorTarget    : REAL;
     rBearingTarget  : REAL;
 
@@ -273,8 +274,9 @@ IF (eState = Stopped) OR (eState = Faulted) THEN
     rCurrentTarget := 0.0;
 END_IF
 
-rMotorCurrent := rMotorCurrent + (rCurrentTarget - rMotorCurrent) * K_CURRENT;
-rMotorCurrent := rMotorCurrent + rNoise * 0.08;
+// CHANGED: filter runs on a clean state; noise is applied only to the output
+rCurrentClean := rCurrentClean + (rCurrentTarget - rCurrentClean) * K_CURRENT;
+rMotorCurrent := rCurrentClean + rNoise * 0.08;
 IF rMotorCurrent < 0.0 THEN
     rMotorCurrent := 0.0;
 END_IF
