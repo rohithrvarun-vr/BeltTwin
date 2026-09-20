@@ -2,57 +2,137 @@
 
 
 
-Sampling: 4 Hz (250 ms). PLC task 10 ms.
+PLC task 10 ms. Telemetry at 4 Hz (250 ms) via OPC UA -> Node-RED -> MQTT.
 
-Healthy steady state at speed 80:
+Severity accumulates per scan while Running; trips at severity >= 0.8.
 
-\- rMotorCurrent 9.0 ± 0.08
-
-\- rMotorTemp 61.99
-
-\- rBearingTemp 35.77
-
-\- rVibration 2.19
-
-\- rPosition +20.0 per 250 ms sample
+Predicted trip = 0.8 / rate / 100 scans per second.
 
 
 
-| Fault | Inject bit | Code | Trip measured | Trip predicted | Signals |
+\## Healthy steady state at speed 80
+
+| Signal | Value |
+
+|---|---|
+
+| rMotorCurrent | 9.0 +/- 0.08 |
+
+| rMotorTemp | 61.989 |
+
+| rBearingTemp | 35.77 |
+
+| rVibration | 2.19 |
+
+| rPosition | +20.0 per 250 ms sample |
+
+
+
+Motor thermal time constant \~60 s, bearing \~120 s. Warm-up from 22 C takes 5-10 min.
+
+
+
+\## Trip times
+
+
+
+| Fault | Inject bit | Code | Measured | Predicted | Old notes |
 
 |---|---|---|---|---|---|
 
-| Jam | bJamInject | 1 | 2.01 s | 2.0 s | current 9.0→17.15, vibration 2.19→7.61, position delta 20.0→1.56 |
+| Jam | bJamInject | 1 | 2.01 s | 2.0 s | 2.5 s (wrong) |
 
-| Manual | bFaultInject | 5 | instant | instant | no sensor change; only fault that increments nFaultCount |
+| Slip | bSlipInject | 2 | 26.33 s | 26.7 s | 30 s (wrong) |
 
-| Slip | bSlipInject | 2 | | 26.7 s | |
+| Bearing wear | bWearInject | 3 | \~400 s (6.67 min) | 400 s | 7 min |
 
-| Overload | bOverloadInject | 4 | | 53.3 s | |
+| Overload | bOverloadInject | 4 | 53.95 s | 53.3 s | 60 s |
 
-| Wear | bWearInject | 3 | | 6.7 min | |
-
-
-
-\## Notes
-
-\- Documented trip times in the old handover were wrong. Jam measured 2.01 s, not 2.5 s.
-
-&#x20; Predicted = 0.8 / rate / 100 scans per second.
-
-\- Jam gives only \~8 samples of transient at 4 Hz before the trip.
-
-\- Motor temp is useless for jam (60 s thermal time constant vs 2 s fault).
-
-\- nFaultCount only counts manual injections, not severity trips.
-
-\- In Faulted state, rMotorCurrent shows half-wave-rectified noise instead of clean 0,
-
-&#x20; because the negative clamp cuts the noise below zero. Cosmetic, nonphysical.
+| Manual | bFaultInject | 5 | instant | instant | instant |
 
 
 
-\## Data files
+\## Signatures at trip (vs healthy)
 
-data/run\_2026-09-20T13-53-15-524Z.csv — jam trip at line 95
+
+
+| Fault | Current | Motor temp | Bearing temp | Vibration | Position |
+
+|---|---|---|---|---|---|
+
+| Jam | 9.0 -> 17.15 (+8.1) | 62.11 (+0.12) | unchanged | 2.19 -> 7.61 | STALLS (20 -> 1.6) |
+
+| Slip | 9.0 -> 7.50 (-1.5) | unchanged | rises | 2.19 -> 4.20 | HALVES (20 -> 10.45) |
+
+| Wear | unchanged | unchanged | 35.77 -> 51.90 (+16.1) | 2.19 -> 5.83 | unaffected |
+
+| Overload | 9.0 -> 13.43 (+4.4) | 61.99 -> 71.44 (+9.5) | unchanged | 2.19 -> 3.19 | unaffected |
+
+| Manual | none | none | none | none | none |
+
+
+
+\## Key findings
+
+\- Jam and slip both cause a speed/position mismatch, so d\_pos\_dt cannot separate
+
+&#x20; them. Motor current separates them cleanly and in OPPOSITE directions:
+
+&#x20; jam +8.1 A, slip -1.5 A.
+
+\- Each fault has a distinct signature across the four sensors. No two faults
+
+&#x20; move the same set of signals in the same direction.
+
+\- Thermal lag limits fast faults: overload reached only +9.5 C of its +28 C
+
+&#x20; steady-state target in 54 s (60 s time constant). Wear, at 400 s, reached
+
+&#x20; +16.1 C of +22.4 C. Motor temp is useless for jam (2 s fault).
+
+\- Vibration responds with no lag and rises in all four real faults. Best
+
+&#x20; general-purpose early indicator; cannot discriminate on its own.
+
+
+
+\## Detection lead time (first sample outside healthy noise band)
+
+| Fault | Lead before PLC trip | Samples of transient at 4 Hz |
+
+|---|---|---|
+
+| Jam | \~2.0 s | \~8 |
+
+| Slip | \~23 s | \~105 |
+
+| Overload | \~50 s | \~215 |
+
+| Wear | \~380 s | \~1600 |
+
+
+
+Jam is the limiting case: 8 samples at 4 Hz. Detection is feasible,
+
+prediction is not. Note as a sampling-rate limitation in the thesis.
+
+
+
+\## Issues found
+
+\- All documented trip times in the earlier handover were too long. Use measured.
+
+\- nFaultCount counts manual injections only, not severity trips.
+
+\- In Faulted state rMotorCurrent shows half-wave-rectified noise instead of 0,
+
+&#x20; because the negative clamp cuts noise below zero. Nonphysical, cosmetic.
+
+\- rMotorCurrent noise accumulated (swing \~2.3 A vs spec +/-0.08) until fixed on
+
+&#x20; 20 Sep: the filter now runs on rCurrentClean and noise is applied only to the
+
+&#x20; published output.
+
+\- Bearing wear resets to 0 on Start. Physically wrong; degradation
 
