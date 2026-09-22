@@ -1,16 +1,11 @@
 [
     {
-        "id": "f89b1c973aecd9bd",
+        "id": "e7401aff17ad778e",
         "type": "tab",
-        "label": "Flow 1",
+        "label": "BeltTwin",
         "disabled": false,
         "info": "",
         "env": []
-    },
-    {
-        "id": "test_tab",
-        "type": "tab",
-        "label": "OPCUA Test"
     },
     {
         "id": "a147a49a525f37d6",
@@ -26,57 +21,111 @@
         "userprivatekey": ""
     },
     {
-        "id": "3ad83016fd169ff9",
-        "type": "inject",
-        "z": "f89b1c973aecd9bd",
+        "id": "49237ffcb8d2d76a",
+        "type": "mqtt-broker",
         "name": "",
+        "broker": "localhost",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "108a7b5470a8176a",
+        "type": "mqtt-broker",
+        "name": "",
+        "broker": "localhost",
+        "port": 1883,
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": false,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "817ea919703b2487",
+        "type": "OpcUa-Endpoint",
+        "name": "BeltTwin OPC UA",
+        "endpoint": "opc.tcp://localhost:4840",
+        "secpol": "Basic256Sha256",
+        "secmode": "SignAndEncrypt",
+        "none": false,
+        "login": true,
+        "usercert": false,
+        "usercertificate": "",
+        "userprivatekey": ""
+    },
+    {
+        "id": "a76e22f39b7cf8a9",
+        "type": "inject",
+        "z": "e7401aff17ad778e",
+        "name": "poll 4Hz",
         "props": [
             {
                 "p": "payload"
-            },
-            {
-                "p": "topic",
-                "vt": "str"
             }
         ],
-        "repeat": "",
+        "repeat": "0.25",
         "crontab": "",
-        "once": true,
-        "onceDelay": 0.1,
-        "topic": "ns=4;s=MAIN.rSpeed",
-        "payload": "1000",
-        "payloadType": "num",
-        "x": 160,
-        "y": 60,
+        "once": false,
+        "onceDelay": "1",
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 220,
+        "y": 200,
         "wires": [
             [
-                "5d59eb76d42f3389"
+                "4e656994d52b16fd"
             ]
         ]
     },
     {
-        "id": "d87dfc17eeea5893",
-        "type": "debug",
-        "z": "f89b1c973aecd9bd",
-        "name": "debug 1",
-        "active": true,
-        "tosidebar": true,
-        "console": false,
-        "tostatus": false,
-        "complete": "true",
-        "targetType": "full",
-        "statusVal": "",
-        "statusType": "auto",
-        "x": 880,
-        "y": 60,
-        "wires": []
-    },
-    {
-        "id": "693498b56faaaa27",
+        "id": "c440d8c2bdaa53af",
         "type": "OpcUa-Client",
-        "z": "f89b1c973aecd9bd",
-        "endpoint": "a147a49a525f37d6",
-        "action": "subscribe",
+        "z": "e7401aff17ad778e",
+        "endpoint": "817ea919703b2487",
+        "action": "read",
         "deadbandtype": "a",
         "deadbandvalue": 1,
         "time": 10,
@@ -91,90 +140,262 @@
         "maxMessageSize": 8192,
         "receiveBufferSize": 8192,
         "sendBufferSize": 8192,
-        "setstatusandtime": true,
+        "setstatusandtime": false,
         "keepsessionalive": false,
         "name": "",
         "applicationName": "",
         "applicationUri": "",
         "x": 580,
-        "y": 60,
+        "y": 180,
         "wires": [
-            [],
             [
-                "d87dfc17eeea5893"
+                "4a6e09ca62c67966"
             ],
-            [
-                "c5de97cfee6a1599"
-            ]
+            [],
+            []
         ]
     },
     {
-        "id": "5d59eb76d42f3389",
-        "type": "OpcUa-Item",
-        "z": "f89b1c973aecd9bd",
-        "item": "ns=4;s=MAIN.rSpeed",
-        "datatype": "Double",
-        "value": "",
-        "name": "",
-        "x": 380,
-        "y": 60,
+        "id": "4e656994d52b16fd",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "fan-out",
+        "func": "const vars = [\n  \"eState\",\"rSpeed\",\"rSpeedRequest\",\"rPosition\",\n  \"bStartCmd\",\"bStopCmd\",\"bResetCmd\",\"bFaultInject\",\n  \"bWearInject\",\"bJamInject\",\"bSlipInject\",\"bOverloadInject\",\n  \"nStartCount\",\"nStopCount\",\"nResetCount\",\"nFaultCount\",\n  \"nPlcTime\",\"eFaultCode\",\n  \"rMotorCurrent\",\"rMotorTemp\",\"rBearingTemp\",\"rVibration\",\"rAmbientTemp\"\n];\nflow.set(\"vars\", vars);\n   return [vars.map(v => ({ topic: \"ns=4;s=MAIN.\" + v }))];",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 200,
         "wires": [
             [
-                "693498b56faaaa27"
+                "c440d8c2bdaa53af"
             ]
         ]
     },
     {
-        "id": "c5de97cfee6a1599",
-        "type": "debug",
-        "z": "f89b1c973aecd9bd",
-        "name": "debug 2",
-        "active": true,
-        "tosidebar": true,
-        "console": false,
-        "tostatus": false,
-        "complete": "false",
-        "statusVal": "",
-        "statusType": "auto",
-        "x": 540,
-        "y": 160,
-        "wires": []
+        "id": "4a6e09ca62c67966",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "cache",
+        "func": "const t = String(msg.topic || \"\");\nconst i = t.indexOf(\"MAIN.\");\nif (i < 0) { node.status({fill:\"red\",shape:\"ring\",text:\"no MAIN in: \" + t}); return null; }\nconst name = t.slice(i + 5);\nif (msg.payload === null || msg.payload === undefined) { node.status({fill:\"yellow\",shape:\"ring\",text:\"null \" + name}); return null; }\nconst c = flow.get(\"cache\") || {};\nc[name] = msg.payload;\nflow.set(\"cache\", c);\nif (name === \"nPlcTime\" || name === \"rPosition\" || name === \"rMotorCurrent\") flow.set(\"lastUpdate\", Date.now());\nnode.status({fill:\"green\",shape:\"dot\",text:name});\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 830,
+        "y": 200,
+        "wires": [
+            []
+        ]
     },
     {
-        "id": "opcua_test_inject",
+        "id": "38396b1a2323950b",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "build json",
+        "func": "const vars = flow.get(\"vars\") || [];\nconst cache = flow.get(\"cache\") || {};\nconst last = flow.get(\"lastUpdate\") || 0;\n\nconst missing = vars.filter(v => !(v in cache));\nif (missing.length) { node.status({fill:\"yellow\",shape:\"ring\",text:\"missing: \" + missing.join(\",\")}); return null; }\nif (Date.now() - last > 2000) { node.status({fill:\"red\",shape:\"ring\",text:\"stale\"}); return null; }\n\nconst data = { ts: Date.now() };\nfor (const v of vars) data[v] = cache[v];\nnode.status({fill:\"green\",shape:\"dot\",text:\"publishing\"});\nreturn { topic: \"conveyor2/telemetry\", payload: JSON.stringify(data) };",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 360,
+        "wires": [
+            [
+                "09aea64ada916521",
+                "3d4c764f583a6297"
+            ]
+        ]
+    },
+    {
+        "id": "be71a12e3634de2a",
         "type": "inject",
-        "z": "test_tab",
-        "name": "Subscribe",
+        "z": "e7401aff17ad778e",
+        "name": "publish 4Hz",
         "props": [
+            {
+                "p": "payload"
+            },
             {
                 "p": "topic",
                 "vt": "str"
+            }
+        ],
+        "repeat": "0.25",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 230,
+        "y": 360,
+        "wires": [
+            [
+                "38396b1a2323950b"
+            ]
+        ]
+    },
+    {
+        "id": "09aea64ada916521",
+        "type": "mqtt out",
+        "z": "e7401aff17ad778e",
+        "name": "mqtt broker",
+        "topic": "",
+        "qos": "0",
+        "retain": "false",
+        "respTopic": "",
+        "contentType": "",
+        "userProps": "",
+        "correl": "",
+        "expiry": "",
+        "broker": "49237ffcb8d2d76a",
+        "x": 610,
+        "y": 360,
+        "wires": []
+    },
+    {
+        "id": "3d4c764f583a6297",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "csv row",
+        "func": "const d = JSON.parse(msg.payload);\nconst prev = flow.get(\"lastPlcTime\");\nif (d.nPlcTime === prev) return null;        // drop duplicate samples\nflow.set(\"lastPlcTime\", d.nPlcTime);\n\nconst runId = flow.get(\"runId\") || \"unset\";\nconst cols = [\"ts\", \"nPlcTime\", \"eState\", \"eFaultCode\", \"rSpeed\", \"rSpeedRequest\", \"rPosition\",\n    \"rMotorCurrent\", \"rMotorTemp\", \"rBearingTemp\", \"rVibration\", \"rAmbientTemp\",\n    \"nStartCount\", \"nStopCount\", \"nResetCount\", \"nFaultCount\"];\n\nif (!flow.get(\"headerWritten:\" + runId)) {\n    flow.set(\"headerWritten:\" + runId, true);\n    msg.payload = \"run_id,\" + cols.join(\",\") + \"\\n\" +\n        runId + \",\" + cols.map(c => d[c]).join(\",\") + \"\\n\";\n} else {\n    msg.payload = runId + \",\" + cols.map(c => d[c]).join(\",\") + \"\\n\";\n}\nmsg.filename = \"C:\\\\Users\\\\varun\\\\Documents\\\\TcXaeShell\\\\BeltTwin\\\\data\\\\\" + runId + \".csv\";\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 580,
+        "y": 480,
+        "wires": [
+            [
+                "b0ac64928bb42d19"
+            ]
+        ]
+    },
+    {
+        "id": "b0ac64928bb42d19",
+        "type": "file",
+        "z": "e7401aff17ad778e",
+        "name": "",
+        "filename": "filename",
+        "filenameType": "msg",
+        "appendNewline": false,
+        "createDir": true,
+        "overwriteFile": "false",
+        "encoding": "none",
+        "x": 860,
+        "y": 480,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "94433c84153751cc",
+        "type": "inject",
+        "z": "e7401aff17ad778e",
+        "name": "New RUN",
+        "props": [
+            {
+                "p": "payload"
             },
+            {
+                "p": "topic",
+                "vt": "str"
+            }
+        ],
+        "repeat": "",
+        "crontab": "",
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "",
+        "payloadType": "date",
+        "x": 200,
+        "y": 420,
+        "wires": [
+            [
+                "7cc632a1632ae634"
+            ]
+        ]
+    },
+    {
+        "id": "7cc632a1632ae634",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "set run id",
+        "func": "const id = \"run_\" + new Date().toISOString().replace(/[:.]/g,\"-\");\nflow.set(\"runId\", id);\nflow.set(\"headerWritten:\" + id, false);\nflow.set(\"lastPlcTime\", null);\nnode.status({fill:\"blue\",shape:\"dot\",text:id});\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 400,
+        "y": 420,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "d1b631fd7659ce78",
+        "type": "inject",
+        "z": "e7401aff17ad778e",
+        "name": "test start",
+        "props": [
             {
                 "p": "payload"
             }
         ],
         "repeat": "",
         "crontab": "",
-        "once": true,
-        "onceDelay": "0.5",
-        "topic": "ns=4;s=MAIN.rPosition",
-        "payload": "1000",
-        "payloadType": "num",
-        "x": 150,
-        "y": 100,
+        "once": false,
+        "onceDelay": 0.1,
+        "topic": "",
+        "payload": "   {\"cmd\":\"start\"}",
+        "payloadType": "json",
+        "x": 220,
+        "y": 540,
         "wires": [
             [
-                "opcua_test_client"
+                "58ffbe44f04c1f57"
             ]
         ]
     },
     {
-        "id": "opcua_test_client",
+        "id": "58ffbe44f04c1f57",
+        "type": "function",
+        "z": "e7401aff17ad778e",
+        "name": "cmd to opcua",
+        "func": "// Whitelist: only these commands can reach the PLC\nconst map = {\n    start:    \"bStartCmd\",\n    stop:     \"bStopCmd\",\n    reset:    \"bResetCmd\",\n    fault:    \"bFaultInject\",\n    jam:      \"bJamInject\",\n    slip:     \"bSlipInject\",\n    overload: \"bOverloadInject\",\n    wear:     \"bWearInject\"\n};\n\nlet p = msg.payload;\nif (Buffer.isBuffer(p)) p = p.toString();\nif (typeof p === \"string\") {\n    try { p = JSON.parse(p); } catch (e) { p = { cmd: p.trim() }; }  // accept plain \"start\"\n}\n\nconst cmd = p && String(p.cmd).toLowerCase();\nconst v = map[cmd];\nif (!v) { node.warn(\"rejected command: \" + JSON.stringify(p)); return null; }\n\nnode.status({fill:\"blue\",shape:\"dot\",text:cmd});\nreturn {\n    topic: \"ns=4;s=MAIN.\" + v + \";datatype=Boolean\",\n    payload: true\n};",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 420,
+        "y": 540,
+        "wires": [
+            [
+                "4fa72ead6dbabeab"
+            ]
+        ]
+    },
+    {
+        "id": "4fa72ead6dbabeab",
         "type": "OpcUa-Client",
-        "z": "test_tab",
-        "endpoint": "a147a49a525f37d6",
-        "action": "subscribe",
+        "z": "e7401aff17ad778e",
+        "endpoint": "817ea919703b2487",
+        "action": "write",
         "deadbandtype": "a",
         "deadbandvalue": 1,
         "time": 10,
@@ -185,41 +406,65 @@
         "securitymode": "None",
         "securitypolicy": "None",
         "useTransport": false,
-        "maxChunkCount": "",
-        "maxMessageSize": "",
-        "receiveBufferSize": "",
-        "sendBufferSize": "",
+        "maxChunkCount": 1,
+        "maxMessageSize": 8192,
+        "receiveBufferSize": 8192,
+        "sendBufferSize": 8192,
         "setstatusandtime": false,
         "keepsessionalive": false,
         "name": "",
         "applicationName": "",
         "applicationUri": "",
-        "x": 350,
-        "y": 100,
+        "x": 640,
+        "y": 540,
         "wires": [
+            [],
             [
-                "opcua_test_debug"
-            ],
-            [
-                "opcua_test_debug"
+                "39a5891cac809ae2"
             ],
             []
         ]
     },
     {
-        "id": "opcua_test_debug",
+        "id": "39a5891cac809ae2",
         "type": "debug",
-        "z": "test_tab",
-        "name": "",
+        "z": "e7401aff17ad778e",
+        "name": "debug 1",
         "active": true,
         "tosidebar": true,
-        "complete": "true",
-        "x": 550,
-        "y": 100,
+        "console": false,
+        "tostatus": false,
+        "complete": "payload",
+        "targetType": "msg",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 860,
+        "y": 540,
         "wires": []
     },
     {
-        "id": "7ace639d4e727ceb",
+        "id": "ca9a87988e15d5a6",
+        "type": "mqtt in",
+        "z": "e7401aff17ad778e",
+        "name": "",
+        "topic": "conveyor2/cmd",
+        "qos": "0",
+        "datatype": "auto-detect",
+        "broker": "49237ffcb8d2d76a",
+        "nl": false,
+        "rap": true,
+        "rh": 0,
+        "inputs": 0,
+        "x": 220,
+        "y": 620,
+        "wires": [
+            [
+                "58ffbe44f04c1f57"
+            ]
+        ]
+    },
+    {
+        "id": "d63f14db6a625f5e",
         "type": "global-config",
         "env": [],
         "modules": {
