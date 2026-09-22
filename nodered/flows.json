@@ -198,7 +198,7 @@
         "type": "function",
         "z": "e7401aff17ad778e",
         "name": "build json",
-        "func": "const vars = flow.get(\"vars\") || [];\nconst cache = flow.get(\"cache\") || {};\nconst last = flow.get(\"lastUpdate\") || 0;\n\nconst missing = vars.filter(v => !(v in cache));\nif (missing.length) { node.status({fill:\"yellow\",shape:\"ring\",text:\"missing: \" + missing.join(\",\")}); return null; }\nif (Date.now() - last > 2000) { node.status({fill:\"red\",shape:\"ring\",text:\"stale\"}); return null; }\n\nconst data = { ts: Date.now() };\nfor (const v of vars) data[v] = cache[v];\nnode.status({fill:\"green\",shape:\"dot\",text:\"publishing\"});\nreturn { topic: \"conveyor2/telemetry\", payload: JSON.stringify(data) };",
+        "func": "const vars = flow.get(\"vars\") || [];\nconst cache = flow.get(\"cache\") || {};\nconst last = flow.get(\"lastUpdate\") || 0;\n\nconst missing = vars.filter(v => !(v in cache));\nif (missing.length) { node.status({fill:\"yellow\",shape:\"ring\",text:\"missing: \" + missing.join(\",\")}); return null; }\nif (Date.now() - last > 2000) { node.status({fill:\"red\",shape:\"ring\",text:\"stale\"}); return null; }\n\nconst data = { ts: Date.now() };\nfor (const v of vars) data[v] = cache[v];\ndata.readTs = last;\nnode.status({fill:\"green\",shape:\"dot\",text:\"publishing\"});\nreturn { topic: \"conveyor2/telemetry\", payload: JSON.stringify(data) };",
         "outputs": 1,
         "timeout": 0,
         "noerr": 0,
@@ -464,7 +464,7 @@
         ]
     },
     {
-        "id": "d63f14db6a625f5e",
+        "id": "c1cf8c31efc4dd16",
         "type": "global-config",
         "env": [],
         "modules": {
