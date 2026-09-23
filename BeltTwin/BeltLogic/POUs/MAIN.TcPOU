@@ -28,6 +28,8 @@ VAR
     bSlipInject     : BOOL;
     {attribute 'OPC.UA.DA' := '1'}
     bOverloadInject : BOOL;
+    {attribute 'OPC.UA.DA' := '1'}
+    bMaintenanceCmd : BOOL;                 // NEW: clears bearing wear (Stopped/Faulted only)
 
     {attribute 'OPC.UA.DA' := '1'}
     nStartCount     : UDINT;
@@ -36,7 +38,9 @@ VAR
     {attribute 'OPC.UA.DA' := '1'}
     nResetCount     : UDINT;
     {attribute 'OPC.UA.DA' := '1'}
-    nFaultCount     : UDINT;
+    nFaultCount     : UDINT;                // CHANGED: counts every trip into Faulted
+    {attribute 'OPC.UA.DA' := '1'}
+    nMaintenanceCount : UDINT;              // NEW: counts performed maintenance actions
     {attribute 'OPC.UA.DA' := '1'}
     nPlcTime        : UDINT;
     {attribute 'OPC.UA.DA' := '1'}
@@ -65,13 +69,23 @@ VAR
     rJamRate        : REAL;
     rSlipRate       : REAL;
     rOverloadRate   : REAL;
-    rNoisePhase     : REAL;
+    rNoisePhase     : LREAL;                // CHANGED: LREAL, wraps at 20*pi
     rNoise          : REAL;
 
     rCurrentTarget  : REAL;
-    rCurrentClean   : REAL;        // NEW: noise-free filtered current state
+    rCurrentClean   : REAL;
     rMotorTarget    : REAL;
     rBearingTarget  : REAL;
+    rMotorTempClean   : LREAL := 22.0;      // NEW: noise-free thermal state, LREAL (no float stall)
+    rBearingTempClean : LREAL := 22.0;      // NEW
+
+    // ---------------- pseudo-random noise ----------------
+    nRng            : DWORD;                // xorshift32 state, seeded from clock on first scan
+    rSum            : LREAL;
+    aGauss          : ARRAY[0..3] OF REAL;  // 0 current, 1 vibration, 2 motor temp, 3 bearing temp
+    i               : INT;
+    j               : INT;
+    nTrip           : INT;
 
     // ---------------- edge detection ----------------
     fbStartTrig     : R_TRIG;
@@ -82,6 +96,7 @@ VAR
     fbJamTrig       : R_TRIG;
     fbSlipTrig      : R_TRIG;
     fbOverloadTrig  : R_TRIG;
+    fbMaintTrig     : R_TRIG;               // NEW
     bStartEdge      : BOOL;
     bStopEdge       : BOOL;
     bResetEdge      : BOOL;
@@ -90,6 +105,7 @@ VAR
     bJamEdge        : BOOL;
     bSlipEdge       : BOOL;
     bOverloadEdge   : BOOL;
+    bMaintEdge      : BOOL;                 // NEW
 END_VAR
 
 VAR CONSTANT
@@ -113,17 +129,41 @@ VAR CONSTANT
     SLIP_RATE       : REAL := 0.0003;
     OVERLOAD_RATE   : REAL := 0.00015;
     FAULT_THRESHOLD : REAL := 0.8;
+
+    // NEW: noise
+    NOISE_WRAP      : LREAL := 62.83185307179586;  // 20*pi: both 3.7 and 11.3 rad/s complete whole cycles
+    CUR_NOISE       : REAL := 0.04;     // A, std dev of random part
+    VIB_NOISE       : REAL := 0.03;     // std dev
+    TEMP_NOISE      : REAL := 0.1;      // degC, std dev (both temperature sensors)
 END_VAR]]></Declaration>
     <Implementation>
       <ST><![CDATA[// ---------------- 0. housekeeping ----------------
 nPlcTime := DWORD_TO_UDINT(TIME_TO_DWORD(TIME()));
 
+// seed once from the clock so each PLC start gets a different noise sequence
+IF nRng = 0 THEN
+    nRng := TIME_TO_DWORD(TIME()) OR 16#00000001;
+END_IF
+
+// deterministic component; 20*pi wrap keeps both sines continuous
 rNoisePhase := rNoisePhase + CYCLE_T;
-IF rNoisePhase > 1000.0 THEN
-    rNoisePhase := rNoisePhase - 1000.0;
+IF rNoisePhase >= NOISE_WRAP THEN
+    rNoisePhase := rNoisePhase - NOISE_WRAP;
 END_IF
 rNoise := LREAL_TO_REAL( SIN(rNoisePhase * 3.7) * 0.5
                        + SIN(rNoisePhase * 11.3) * 0.3 );
+
+// random component: 4 independent ~N(0,1) samples (xorshift32, sum of 4 uniforms)
+FOR i := 0 TO 3 DO
+    rSum := 0.0;
+    FOR j := 1 TO 4 DO
+        nRng := nRng XOR SHL(nRng, 13);
+        nRng := nRng XOR SHR(nRng, 17);
+        nRng := nRng XOR SHL(nRng, 5);
+        rSum := rSum + DWORD_TO_LREAL(nRng) / 4294967296.0;
+    END_FOR
+    aGauss[i] := LREAL_TO_REAL((rSum - 2.0) * 1.7320508);
+END_FOR
 
 // ---------------- 1. edge detection ----------------
 fbStartTrig(CLK := bStartCmd);
@@ -134,6 +174,7 @@ fbWearTrig(CLK := bWearInject);
 fbJamTrig(CLK := bJamInject);
 fbSlipTrig(CLK := bSlipInject);
 fbOverloadTrig(CLK := bOverloadInject);
+fbMaintTrig(CLK := bMaintenanceCmd);
 
 bStartEdge    := fbStartTrig.Q;
 bStopEdge     := fbStopTrig.Q;
@@ -143,11 +184,12 @@ bWearEdge     := fbWearTrig.Q;
 bJamEdge      := fbJamTrig.Q;
 bSlipEdge     := fbSlipTrig.Q;
 bOverloadEdge := fbOverloadTrig.Q;
+bMaintEdge    := fbMaintTrig.Q;
 
 IF bStartEdge THEN nStartCount := nStartCount + 1; END_IF
 IF bStopEdge  THEN nStopCount  := nStopCount  + 1; END_IF
 IF bResetEdge THEN nResetCount := nResetCount + 1; END_IF
-IF bFaultEdge THEN nFaultCount := nFaultCount + 1; END_IF
+// nFaultCount is now incremented on every trip, in the Running state
 
 IF bWearEdge     THEN rWearRate     := WEAR_RATE;     END_IF
 IF bJamEdge      THEN rJamRate      := JAM_RATE;      END_IF
@@ -162,6 +204,7 @@ bWearInject     := FALSE;
 bJamInject      := FALSE;
 bSlipInject     := FALSE;
 bOverloadInject := FALSE;
+bMaintenanceCmd := FALSE;
 
 // ---------------- 2. speed request -> target ----------------
 IF rSpeedRequest > 80.0 THEN
@@ -190,13 +233,17 @@ CASE eState OF
 
     Stopped:
         rSpeed := 0.0;
+        IF bMaintEdge THEN
+            rBearingWear      := 0.0;
+            rWearRate         := 0.0;
+            nMaintenanceCount := nMaintenanceCount + 1;
+        END_IF
         IF bStartEdge THEN
             eFaultCode     := 0;
-            rBearingWear   := 0.0;
+            // transient faults clear; bearing wear and its rate persist until maintenance
             rJamSeverity   := 0.0;
             rSlipSeverity  := 0.0;
             rOverloadLevel := 0.0;
-            rWearRate      := 0.0;
             rJamRate       := 0.0;
             rSlipRate      := 0.0;
             rOverloadRate  := 0.0;
@@ -214,36 +261,49 @@ CASE eState OF
         END_IF
 
     Running:
-        rSpeed := rTargetSpeed;
+        // CHANGED: ramp to setpoint instead of stepping (mid-run speed changes)
+        IF rSpeed < rTargetSpeed - RAMP_PER_SCAN THEN
+            rSpeed := rSpeed + RAMP_PER_SCAN;
+        ELSIF rSpeed > rTargetSpeed + RAMP_PER_SCAN THEN
+            rSpeed := rSpeed - RAMP_PER_SCAN;
+        ELSE
+            rSpeed := rTargetSpeed;
+        END_IF
+
+        nTrip := 0;
+        IF bFaultEdge THEN
+            nTrip := 5;
+        ELSIF rJamSeverity >= FAULT_THRESHOLD THEN
+            nTrip := 1;
+        ELSIF rSlipSeverity >= FAULT_THRESHOLD THEN
+            nTrip := 2;
+        ELSIF rBearingWear >= FAULT_THRESHOLD THEN
+            nTrip := 3;
+        ELSIF rOverloadLevel >= FAULT_THRESHOLD THEN
+            nTrip := 4;
+        END_IF
 
         IF bStopEdge THEN
             eState := Stopped;
-        ELSIF bFaultEdge THEN
-            eFaultCode := 5;
-            eState := Faulted;
-        ELSIF rJamSeverity >= FAULT_THRESHOLD THEN
-            eFaultCode := 1;
-            eState := Faulted;
-        ELSIF rSlipSeverity >= FAULT_THRESHOLD THEN
-            eFaultCode := 2;
-            eState := Faulted;
-        ELSIF rBearingWear >= FAULT_THRESHOLD THEN
-            eFaultCode := 3;
-            eState := Faulted;
-        ELSIF rOverloadLevel >= FAULT_THRESHOLD THEN
-            eFaultCode := 4;
-            eState := Faulted;
+        ELSIF nTrip <> 0 THEN
+            eFaultCode  := nTrip;
+            nFaultCount := nFaultCount + 1;
+            eState      := Faulted;
         END_IF
 
     Faulted:
         rSpeed := 0.0;
+        IF bMaintEdge THEN
+            rBearingWear      := 0.0;
+            rWearRate         := 0.0;
+            nMaintenanceCount := nMaintenanceCount + 1;
+        END_IF
         IF bResetEdge THEN
             eFaultCode     := 0;
-            rBearingWear   := 0.0;
+            // bearing wear is NOT cleared here: a worn bearing re-faults on Start
             rJamSeverity   := 0.0;
             rSlipSeverity  := 0.0;
             rOverloadLevel := 0.0;
-            rWearRate      := 0.0;
             rJamRate       := 0.0;
             rSlipRate      := 0.0;
             rOverloadRate  := 0.0;
@@ -274,9 +334,12 @@ IF (eState = Stopped) OR (eState = Faulted) THEN
     rCurrentTarget := 0.0;
 END_IF
 
-// CHANGED: filter runs on a clean state; noise is applied only to the output
 rCurrentClean := rCurrentClean + (rCurrentTarget - rCurrentClean) * K_CURRENT;
-rMotorCurrent := rCurrentClean + rNoise * 0.08;
+IF (eState = Stopped) OR (eState = Faulted) THEN
+    rMotorCurrent := rCurrentClean;     // motor off: smooth decay to 0, no rectified noise
+ELSE
+    rMotorCurrent := rCurrentClean + rNoise * 0.04 + aGauss[0] * CUR_NOISE;
+END_IF
 IF rMotorCurrent < 0.0 THEN
     rMotorCurrent := 0.0;
 END_IF
@@ -290,7 +353,8 @@ IF (eState = Stopped) OR (eState = Faulted) THEN
     rMotorTarget := rAmbientTemp;
 END_IF
 
-rMotorTemp := rMotorTemp + (rMotorTarget - rMotorTemp) * K_MOTOR;
+rMotorTempClean := rMotorTempClean + (rMotorTarget - rMotorTempClean) * K_MOTOR;
+rMotorTemp      := LREAL_TO_REAL(rMotorTempClean) + aGauss[2] * TEMP_NOISE;
 
 rBearingTarget := rAmbientTemp
                 + rSpeed * BEAR_PER_SPEED
@@ -301,7 +365,8 @@ IF (eState = Stopped) OR (eState = Faulted) THEN
     rBearingTarget := rAmbientTemp;
 END_IF
 
-rBearingTemp := rBearingTemp + (rBearingTarget - rBearingTemp) * K_BEARING;
+rBearingTempClean := rBearingTempClean + (rBearingTarget - rBearingTempClean) * K_BEARING;
+rBearingTemp      := LREAL_TO_REAL(rBearingTempClean) + aGauss[3] * TEMP_NOISE;
 
 rVibration := VIB_BASE
             + rSpeed * VIB_PER_SPEED
@@ -313,7 +378,7 @@ rVibration := VIB_BASE
 IF (eState = Stopped) OR (eState = Faulted) THEN
     rVibration := 0.0;
 ELSE
-    rVibration := rVibration + rNoise * 0.06;
+    rVibration := rVibration + rNoise * 0.04 + aGauss[1] * VIB_NOISE;
 END_IF
 
 IF rVibration < 0.0 THEN

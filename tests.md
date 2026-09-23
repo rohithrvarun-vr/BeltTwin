@@ -135,4 +135,5 @@ prediction is not. Note as a sampling-rate limitation in the thesis.
 &#x20; published output.
 
 \- Bearing wear resets to 0 on Start. Physically wrong; degradation
+Measured median 197 ms (p95 221 ms) from OPC UA read to Unity display while streaming 23 process variables at 4 Hz over OPC UA and MQTT.
 
