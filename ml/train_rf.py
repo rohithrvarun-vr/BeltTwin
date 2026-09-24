@@ -39,12 +39,11 @@ def roll_slope(x: pd.Series, n: int) -> pd.Series:
     return (n * s_ix - s_i * s_x) / (n * s_ii - s_i ** 2) * HZ
 
 
-def load_run(path: str, run: pd.Series) -> pd.DataFrame:
-    df = pd.read_csv(path)
-    df = df.sort_values("ts").drop_duplicates("nPlcTime").reset_index(drop=True)
-
-    # belt motion from position (unwrap the 1000 wrap), relative to commanded speed
-    dpos = df["rPosition"].diff() % POS_WRAP
+def add_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Causal features. Shared by training and the live detector - keep ONE copy.
+    df: consecutive samples of one run, sorted by ts, duplicates removed."""
+    df = df.copy()
+    dpos = df["rPosition"].diff() % POS_WRAP          # unwrap the 1000 wrap
     dt = df["ts"].diff() / 1000.0
     belt = dpos / dt
     df["belt_ratio"] = np.where(df["rSpeed"] > 1.0, belt / df["rSpeed"], np.nan)
@@ -57,6 +56,13 @@ def load_run(path: str, run: pd.Series) -> pd.DataFrame:
         df[f"{s}_slope_l"] = roll_slope(x, LONG)
         df[f"{s}_delta_sl"] = df[f"{s}_mean_s"] - x.rolling(LONG).mean()
     df["speed"] = df["rSpeed"]
+    return df
+
+
+def load_run(path: str, run: pd.Series) -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df = df.sort_values("ts").drop_duplicates("nPlcTime").reset_index(drop=True)
+    df = add_features(df)
 
     # true trip = first eState==3 row; relabel from there, not from the runner
     trip = df.index[df["eState"] == 3]
