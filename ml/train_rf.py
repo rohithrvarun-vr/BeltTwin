@@ -28,7 +28,8 @@ HZ = 4.0            # sample rate
 SHORT = 8           # 2 s window  (fast faults: jam trips in ~2 s)
 LONG = 120          # 30 s window (slow faults: thermal trends)
 POS_WRAP = 1000.0
-SIGNALS = ["rMotorCurrent", "rMotorTemp", "rBearingTemp", "rVibration", "belt_ratio"]
+SIGNALS = ["rMotorCurrent", "rMotorTemp", "rBearingTemp", "rVibration", "belt_ratio",
+           "rSpeed"]   # speed trend = operating context: a commanded speed change is not a fault
 
 
 def roll_slope(x: pd.Series, n: int) -> pd.Series:
