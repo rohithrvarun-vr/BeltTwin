@@ -2,8 +2,13 @@
 <TcPlcObject Version="1.1.0.1" ProductVersion="3.1.4026.18">
   <POU Name="MAIN" Id="{14822338-0f92-4154-bb06-25c11b40a368}" SpecialFunc="None">
     <Declaration><![CDATA[PROGRAM MAIN
+// BeltTwin sensor model v3 (Phase 2)
+// v3 changes vs v2: Box-Muller noise (real tails), sensor quantisation, encoder quantisation,
+// unmeasured load disturbance (fast + slow OU), belt creep, ambient drift (OU) with noisy sensor,
+// rare impulsive spikes on current and vibration, randomised and accelerating fault onset,
+// convex wear-to-vibration, nInjectCount for inject verification. All internals LREAL.
 VAR
-    // ---------------- exposed to OPC UA ----------------
+    // ---------------- exposed to OPC UA (26) ----------------
     {attribute 'OPC.UA.DA' := '1'}
     eState          : E_ConveyorState := Stopped;
     {attribute 'OPC.UA.DA' := '1'}
@@ -11,7 +16,7 @@ VAR
     {attribute 'OPC.UA.DA' := '1'}
     rSpeedRequest   : REAL := 80.0;
     {attribute 'OPC.UA.DA' := '1'}
-    rPosition       : REAL;
+    rPosition       : REAL;                 // v3: quantised to ENC_RES counts
     {attribute 'OPC.UA.DA' := '1'}
     bStartCmd       : BOOL;
     {attribute 'OPC.UA.DA' := '1'}
@@ -29,7 +34,7 @@ VAR
     {attribute 'OPC.UA.DA' := '1'}
     bOverloadInject : BOOL;
     {attribute 'OPC.UA.DA' := '1'}
-    bMaintenanceCmd : BOOL;                 // NEW: clears bearing wear (Stopped/Faulted only)
+    bMaintenanceCmd : BOOL;                 // clears bearing wear (Stopped/Faulted only)
 
     {attribute 'OPC.UA.DA' := '1'}
     nStartCount     : UDINT;
@@ -38,9 +43,11 @@ VAR
     {attribute 'OPC.UA.DA' := '1'}
     nResetCount     : UDINT;
     {attribute 'OPC.UA.DA' := '1'}
-    nFaultCount     : UDINT;                // CHANGED: counts every trip into Faulted
+    nFaultCount     : UDINT;                // counts every trip into Faulted
     {attribute 'OPC.UA.DA' := '1'}
-    nMaintenanceCount : UDINT;              // NEW: counts performed maintenance actions
+    nMaintenanceCount : UDINT;              // counts performed maintenance actions
+    {attribute 'OPC.UA.DA' := '1'}
+    nInjectCount    : UDINT;                // NEW v3: +1 on every inject edge (jam/slip/wear/overload/manual)
     {attribute 'OPC.UA.DA' := '1'}
     nPlcTime        : UDINT;
     {attribute 'OPC.UA.DA' := '1'}
@@ -56,35 +63,59 @@ VAR
     {attribute 'OPC.UA.DA' := '1'}
     rVibration      : REAL;
     {attribute 'OPC.UA.DA' := '1'}
-    rAmbientTemp    : REAL := 22.0;
+    rAmbientTemp    : REAL := 22.0;         // v3: noisy, quantised measurement of rAmbientTrue
 
     // ---------------- hidden internals ----------------
     rTargetSpeed    : REAL;
-    rBeltSpeed      : REAL;
-    rBearingWear    : REAL;
-    rJamSeverity    : REAL;
-    rSlipSeverity   : REAL;
-    rOverloadLevel  : REAL;
-    rWearRate       : REAL;
-    rJamRate        : REAL;
-    rSlipRate       : REAL;
-    rOverloadRate   : REAL;
-    rNoisePhase     : LREAL;                // CHANGED: LREAL, wraps at 20*pi
-    rNoise          : REAL;
+    rSpeedL         : LREAL;
+    rBeltSpeed      : LREAL;
+    rPosTrue        : LREAL;
+    rCreep          : LREAL;
 
-    rCurrentTarget  : REAL;
-    rCurrentClean   : REAL;
-    rMotorTarget    : REAL;
-    rBearingTarget  : REAL;
-    rMotorTempClean   : LREAL := 22.0;      // NEW: noise-free thermal state, LREAL (no float stall)
-    rBearingTempClean : LREAL := 22.0;      // NEW
+    rBearingWear    : LREAL;
+    rJamSeverity    : LREAL;
+    rSlipSeverity   : LREAL;
+    rOverloadLevel  : LREAL;
+    rWearRate       : LREAL;
+    rJamRate        : LREAL;
+    rSlipRate       : LREAL;
+    rOverloadRate   : LREAL;
+    rWearAccel      : LREAL;
+    rJamAccel       : LREAL;
+    rSlipAccel      : LREAL;
+    rOverloadAccel  : LREAL;
+    rOnsetFactor    : LREAL;                // log-uniform in [0.5, 2], drawn every scan, used at inject edges
+    rScans          : LREAL;
 
-    // ---------------- pseudo-random noise ----------------
+    rLoadFast       : LREAL;                // unmeasured load disturbance, OU tau 20 s
+    rLoadSlow       : LREAL;                // unmeasured load disturbance, OU tau 600 s
+    rLoad           : LREAL;
+    rAmbientTrue    : LREAL := 22.0;        // true hall temperature, OU tau 3600 s
+
+    rNoisePhase     : LREAL;
+    rNoise          : LREAL;
+
+    bMotorOn        : BOOL;
+    rCurrentTarget  : LREAL;
+    rCurrentClean   : LREAL;
+    rMotorTarget    : LREAL;
+    rBearingTarget  : LREAL;
+    rMotorTempClean   : LREAL := 22.0;
+    rBearingTempClean : LREAL := 22.0;
+    rVibClean       : LREAL;
+    rCurSpike       : LREAL;
+    rVibSpike       : LREAL;
+    rTmp            : LREAL;
+
+    // ---------------- pseudo-random numbers ----------------
     nRng            : DWORD;                // xorshift32 state, seeded from clock on first scan
-    rSum            : LREAL;
-    aGauss          : ARRAY[0..3] OF REAL;  // 0 current, 1 vibration, 2 motor temp, 3 bearing temp
-    i               : INT;
-    j               : INT;
+    rU1             : LREAL;
+    rU2             : LREAL;
+    rR              : LREAL;
+    rTh             : LREAL;
+    aGauss          : ARRAY[0..7] OF LREAL; // 0 cur, 1 vib, 2 motor T, 3 bearing T, 4 ambient sensor, 5 load fast, 6 load slow, 7 ambient drift
+    aUni            : ARRAY[0..5] OF LREAL; // 0 cur spike test, 1 cur spike size, 2 cur spike sign, 3 vib spike test, 4 vib spike size, 5 onset factor
+    k               : INT;
     nTrip           : INT;
 
     // ---------------- edge detection ----------------
@@ -96,7 +127,7 @@ VAR
     fbJamTrig       : R_TRIG;
     fbSlipTrig      : R_TRIG;
     fbOverloadTrig  : R_TRIG;
-    fbMaintTrig     : R_TRIG;               // NEW
+    fbMaintTrig     : R_TRIG;
     bStartEdge      : BOOL;
     bStopEdge       : BOOL;
     bResetEdge      : BOOL;
@@ -105,65 +136,115 @@ VAR
     bJamEdge        : BOOL;
     bSlipEdge       : BOOL;
     bOverloadEdge   : BOOL;
-    bMaintEdge      : BOOL;                 // NEW
+    bMaintEdge      : BOOL;
 END_VAR
 
 VAR CONSTANT
-    CYCLE_T         : REAL := 0.01;
-    RAMP_PER_SCAN   : REAL := 0.5;
-    POS_WRAP        : REAL := 1000.0;
+    CYCLE_T         : LREAL := 0.01;
+    RAMP_PER_SCAN   : REAL  := 0.5;
+    POS_WRAP        : LREAL := 1000.0;
+    TWO_PI          : LREAL := 6.283185307179586;
+    NOISE_WRAP      : LREAL := 62.83185307179586;   // 20*pi
 
-    CUR_IDLE        : REAL := 2.0;
-    CUR_PER_SPEED   : REAL := 0.0875;
-    MOTOR_PER_SPEED : REAL := 0.5;
-    BEAR_PER_SPEED  : REAL := 0.175;
-    VIB_BASE        : REAL := 0.2;
-    VIB_PER_SPEED   : REAL := 0.025;
+    // healthy plant (unchanged from v2)
+    CUR_IDLE        : LREAL := 2.0;
+    CUR_PER_SPEED   : LREAL := 0.0875;
+    MOTOR_PER_SPEED : LREAL := 0.5;
+    BEAR_PER_SPEED  : LREAL := 0.175;
+    VIB_BASE        : LREAL := 0.2;
+    VIB_PER_SPEED   : LREAL := 0.025;
+    K_MOTOR         : LREAL := 0.000167;
+    K_BEARING       : LREAL := 0.0000833;
+    K_CURRENT       : LREAL := 0.02;
 
-    K_MOTOR         : REAL := 0.000167;
-    K_BEARING       : REAL := 0.0000833;
-    K_CURRENT       : REAL := 0.02;
+    // faults: nominal time to trip, randomised x[0.5, 2] log-uniform per injection
+    FAULT_THRESHOLD : LREAL := 0.8;
+    JAM_T_NOM       : LREAL := 2.0;     // linear onset (sudden mechanical event)
+    SLIP_T_NOM      : LREAL := 25.0;    // quadratic onset
+    OVERLOAD_T_NOM  : LREAL := 50.0;    // quadratic onset
+    WEAR_T_NOM      : LREAL := 400.0;   // quadratic onset
+    LN_HALF         : LREAL := -0.6931471805599453;
+    LN_FOUR         : LREAL := 1.3862943611198906;
+    VIB_WEAR        : LREAL := 5.625;   // vib += VIB_WEAR * wear^2 (= 3.6 at trip, same as v2)
 
-    WEAR_RATE       : REAL := 0.00002;
-    JAM_RATE        : REAL := 0.004;
-    SLIP_RATE       : REAL := 0.0003;
-    OVERLOAD_RATE   : REAL := 0.00015;
-    FAULT_THRESHOLD : REAL := 0.8;
+    // measurement noise and resolution
+    CUR_NOISE       : LREAL := 0.05;    // A, Gaussian std
+    CUR_RES         : LREAL := 0.01;    // A per digit
+    CUR_SPIKE_P     : LREAL := 0.0001;  // per scan while motor on
+    CUR_SPIKE_MIN   : LREAL := 0.5;     // A
+    CUR_SPIKE_MAX   : LREAL := 1.5;     // A, random sign
+    VIB_NOISE_REL   : LREAL := 0.04;    // std as fraction of true vibration
+    VIB_NOISE_ABS   : LREAL := 0.02;    // std floor
+    VIB_RES         : LREAL := 0.01;
+    VIB_SPIKE_P     : LREAL := 0.0001;
+    VIB_SPIKE_MIN   : LREAL := 0.5;
+    VIB_SPIKE_MAX   : LREAL := 2.0;     // positive only (impacts)
+    TEMP_NOISE      : LREAL := 0.08;    // degC std, motor and bearing
+    TEMP_RES        : LREAL := 0.1;     // degC per digit (EL3202-style)
+    AMB_NOISE       : LREAL := 0.05;    // degC std, ambient sensor
+    ENC_RES         : LREAL := 0.25;    // position units per encoder count
 
-    // NEW: noise
-    NOISE_WRAP      : LREAL := 62.83185307179586;  // 20*pi: both 3.7 and 11.3 rad/s complete whole cycles
-    CUR_NOISE       : REAL := 0.04;     // A, std dev of random part
-    VIB_NOISE       : REAL := 0.03;     // std dev
-    TEMP_NOISE      : REAL := 0.1;      // degC, std dev (both temperature sensors)
+    // unmeasured load disturbance, in the same units as rOverloadLevel
+    LOAD_FAST_SIGMA : LREAL := 0.04;
+    LOAD_FAST_A     : LREAL := 0.9995001249791693;   // exp(-0.01/20)
+    LOAD_FAST_B     : LREAL := 0.031614872554305486; // sqrt(1-A^2)
+    LOAD_SLOW_SIGMA : LREAL := 0.04;
+    LOAD_SLOW_A     : LREAL := 0.9999833334722215;   // exp(-0.01/600)
+    LOAD_SLOW_B     : LREAL := 0.00577345457970749;
+    LOAD_LIMIT      : LREAL := 0.25;
+    LOAD_CUR        : LREAL := 6.0;     // same current coefficient as overload
+    LOAD_MOTOR      : LREAL := 35.0;    // same motor-temp coefficient as overload
+    LOAD_BEAR       : LREAL := 5.0;
+    LOAD_VIB        : LREAL := 1.2;
+    CREEP_BASE      : LREAL := 0.01;    // healthy belt runs 1 % slower than the drum
+    CREEP_PER_LOAD  : LREAL := 0.10;
+
+    // ambient drift
+    AMB_MEAN        : LREAL := 22.0;
+    AMB_SIGMA       : LREAL := 1.0;
+    AMB_A           : LREAL := 0.9999972222260802;   // exp(-0.01/3600)
+    AMB_B           : LREAL := 0.002357019330317829;
 END_VAR]]></Declaration>
     <Implementation>
       <ST><![CDATA[// ---------------- 0. housekeeping ----------------
 nPlcTime := DWORD_TO_UDINT(TIME_TO_DWORD(TIME()));
 
-// seed once from the clock so each PLC start gets a different noise sequence
 IF nRng = 0 THEN
     nRng := TIME_TO_DWORD(TIME()) OR 16#00000001;
 END_IF
 
-// deterministic component; 20*pi wrap keeps both sines continuous
+// deterministic ripple, 20*pi wrap keeps both sines continuous
 rNoisePhase := rNoisePhase + CYCLE_T;
 IF rNoisePhase >= NOISE_WRAP THEN
     rNoisePhase := rNoisePhase - NOISE_WRAP;
 END_IF
-rNoise := LREAL_TO_REAL( SIN(rNoisePhase * 3.7) * 0.5
-                       + SIN(rNoisePhase * 11.3) * 0.3 );
+rNoise := SIN(rNoisePhase * 3.7) * 0.5 + SIN(rNoisePhase * 11.3) * 0.3;
 
-// random component: 4 independent ~N(0,1) samples (xorshift32, sum of 4 uniforms)
-FOR i := 0 TO 3 DO
-    rSum := 0.0;
-    FOR j := 1 TO 4 DO
-        nRng := nRng XOR SHL(nRng, 13);
-        nRng := nRng XOR SHR(nRng, 17);
-        nRng := nRng XOR SHL(nRng, 5);
-        rSum := rSum + DWORD_TO_LREAL(nRng) / 4294967296.0;
-    END_FOR
-    aGauss[i] := LREAL_TO_REAL((rSum - 2.0) * 1.7320508);
+// 8 Gaussian samples, Box-Muller (tails to about 6.6 sigma; v2 clipped at 3.46 sigma)
+FOR k := 0 TO 3 DO
+    nRng := nRng XOR SHL(nRng, 13);
+    nRng := nRng XOR SHR(nRng, 17);
+    nRng := nRng XOR SHL(nRng, 5);
+    rU1  := DWORD_TO_LREAL(nRng) / 4294967296.0;   // never 0: xorshift state is never 0
+    nRng := nRng XOR SHL(nRng, 13);
+    nRng := nRng XOR SHR(nRng, 17);
+    nRng := nRng XOR SHL(nRng, 5);
+    rU2  := DWORD_TO_LREAL(nRng) / 4294967296.0;
+    rR   := SQRT(-2.0 * LN(rU1));
+    rTh  := TWO_PI * rU2;
+    aGauss[2 * k]     := rR * COS(rTh);
+    aGauss[2 * k + 1] := rR * SIN(rTh);
 END_FOR
+
+// 6 uniform samples in (0, 1)
+FOR k := 0 TO 5 DO
+    nRng := nRng XOR SHL(nRng, 13);
+    nRng := nRng XOR SHR(nRng, 17);
+    nRng := nRng XOR SHL(nRng, 5);
+    aUni[k] := DWORD_TO_LREAL(nRng) / 4294967296.0;
+END_FOR
+
+rOnsetFactor := EXP(LN_HALF + aUni[5] * LN_FOUR);   // log-uniform 0.5 .. 2.0
 
 // ---------------- 1. edge detection ----------------
 fbStartTrig(CLK := bStartCmd);
@@ -189,12 +270,36 @@ bMaintEdge    := fbMaintTrig.Q;
 IF bStartEdge THEN nStartCount := nStartCount + 1; END_IF
 IF bStopEdge  THEN nStopCount  := nStopCount  + 1; END_IF
 IF bResetEdge THEN nResetCount := nResetCount + 1; END_IF
-// nFaultCount is now incremented on every trip, in the Running state
 
-IF bWearEdge     THEN rWearRate     := WEAR_RATE;     END_IF
-IF bJamEdge      THEN rJamRate      := JAM_RATE;      END_IF
-IF bSlipEdge     THEN rSlipRate     := SLIP_RATE;     END_IF
-IF bOverloadEdge THEN rOverloadRate := OVERLOAD_RATE; END_IF
+// fault onset profiles. Jam: linear. Slip/overload/wear: rate starts at 0 and grows
+// linearly, so severity grows quadratically; accel chosen so severity hits 0.8 after rScans.
+IF bJamEdge THEN
+    rScans    := rOnsetFactor * JAM_T_NOM / CYCLE_T;
+    rJamRate  := FAULT_THRESHOLD / rScans;
+    rJamAccel := 0.0;
+    nInjectCount := nInjectCount + 1;
+END_IF
+IF bSlipEdge THEN
+    rScans     := rOnsetFactor * SLIP_T_NOM / CYCLE_T;
+    rSlipRate  := 0.0;
+    rSlipAccel := 2.0 * FAULT_THRESHOLD / (rScans * (rScans + 1.0));
+    nInjectCount := nInjectCount + 1;
+END_IF
+IF bOverloadEdge THEN
+    rScans         := rOnsetFactor * OVERLOAD_T_NOM / CYCLE_T;
+    rOverloadRate  := 0.0;
+    rOverloadAccel := 2.0 * FAULT_THRESHOLD / (rScans * (rScans + 1.0));
+    nInjectCount := nInjectCount + 1;
+END_IF
+IF bWearEdge THEN
+    rScans     := rOnsetFactor * WEAR_T_NOM / CYCLE_T;
+    rWearRate  := 0.0;
+    rWearAccel := 2.0 * FAULT_THRESHOLD / (rScans * (rScans + 1.0));
+    nInjectCount := nInjectCount + 1;
+END_IF
+IF bFaultEdge THEN
+    nInjectCount := nInjectCount + 1;
+END_IF
 
 bStartCmd       := FALSE;
 bStopCmd        := FALSE;
@@ -215,8 +320,26 @@ ELSE
     rTargetSpeed := rSpeedRequest;
 END_IF
 
-// ---------------- 3. fault accumulation ----------------
+// ---------------- 3. disturbances (always evolve) ----------------
+rLoadFast := LOAD_FAST_A * rLoadFast + LOAD_FAST_B * LOAD_FAST_SIGMA * aGauss[5];
+rLoadSlow := LOAD_SLOW_A * rLoadSlow + LOAD_SLOW_B * LOAD_SLOW_SIGMA * aGauss[6];
+rLoad     := rLoadFast + rLoadSlow;
+IF rLoad > LOAD_LIMIT THEN
+    rLoad := LOAD_LIMIT;
+ELSIF rLoad < -LOAD_LIMIT THEN
+    rLoad := -LOAD_LIMIT;
+END_IF
+
+rAmbientTrue := AMB_MEAN + AMB_A * (rAmbientTrue - AMB_MEAN) + AMB_B * AMB_SIGMA * aGauss[7];
+rTmp := rAmbientTrue + AMB_NOISE * aGauss[4];
+rAmbientTemp := LREAL_TO_REAL(DINT_TO_LREAL(LREAL_TO_DINT(rTmp / TEMP_RES)) * TEMP_RES);
+
+// ---------------- 4. fault accumulation ----------------
 IF eState = Running THEN
+    rWearRate      := rWearRate     + rWearAccel;
+    rJamRate       := rJamRate      + rJamAccel;
+    rSlipRate      := rSlipRate     + rSlipAccel;
+    rOverloadRate  := rOverloadRate + rOverloadAccel;
     rBearingWear   := rBearingWear   + rWearRate;
     rJamSeverity   := rJamSeverity   + rJamRate;
     rSlipSeverity  := rSlipSeverity  + rSlipRate;
@@ -228,7 +351,9 @@ IF rJamSeverity   > 1.0 THEN rJamSeverity   := 1.0; END_IF
 IF rSlipSeverity  > 1.0 THEN rSlipSeverity  := 1.0; END_IF
 IF rOverloadLevel > 1.0 THEN rOverloadLevel := 1.0; END_IF
 
-// ---------------- 4. state machine ----------------
+// ---------------- 5. state machine ----------------
+// The trip below is on hidden severity: treat it as the functional-failure event (ground truth),
+// not as a realistic protection relay. Threshold baselines on measured signals are done offline.
 CASE eState OF
 
     Stopped:
@@ -236,17 +361,21 @@ CASE eState OF
         IF bMaintEdge THEN
             rBearingWear      := 0.0;
             rWearRate         := 0.0;
+            rWearAccel        := 0.0;
             nMaintenanceCount := nMaintenanceCount + 1;
         END_IF
         IF bStartEdge THEN
             eFaultCode     := 0;
-            // transient faults clear; bearing wear and its rate persist until maintenance
+            // transient faults clear; bearing wear, its rate and accel persist until maintenance
             rJamSeverity   := 0.0;
             rSlipSeverity  := 0.0;
             rOverloadLevel := 0.0;
             rJamRate       := 0.0;
             rSlipRate      := 0.0;
             rOverloadRate  := 0.0;
+            rJamAccel      := 0.0;
+            rSlipAccel     := 0.0;
+            rOverloadAccel := 0.0;
             eState := Starting;
         END_IF
 
@@ -261,7 +390,6 @@ CASE eState OF
         END_IF
 
     Running:
-        // CHANGED: ramp to setpoint instead of stepping (mid-run speed changes)
         IF rSpeed < rTargetSpeed - RAMP_PER_SCAN THEN
             rSpeed := rSpeed + RAMP_PER_SCAN;
         ELSIF rSpeed > rTargetSpeed + RAMP_PER_SCAN THEN
@@ -296,6 +424,7 @@ CASE eState OF
         IF bMaintEdge THEN
             rBearingWear      := 0.0;
             rWearRate         := 0.0;
+            rWearAccel        := 0.0;
             nMaintenanceCount := nMaintenanceCount + 1;
         END_IF
         IF bResetEdge THEN
@@ -307,83 +436,121 @@ CASE eState OF
             rJamRate       := 0.0;
             rSlipRate      := 0.0;
             rOverloadRate  := 0.0;
+            rJamAccel      := 0.0;
+            rSlipAccel     := 0.0;
+            rOverloadAccel := 0.0;
             eState := Stopped;
         END_IF
 
 END_CASE
 
-// ---------------- 5. belt kinematics ----------------
-rBeltSpeed := rSpeed * (1.0 - rJamSeverity) * (1.0 - rSlipSeverity * 0.6);
+rSpeedL  := REAL_TO_LREAL(rSpeed);
+bMotorOn := (eState = Starting) OR (eState = Running);
+
+// ---------------- 6. belt kinematics and encoder ----------------
+rCreep := CREEP_BASE + CREEP_PER_LOAD * rLoad;
+IF rCreep < 0.0 THEN
+    rCreep := 0.0;
+END_IF
+
+rBeltSpeed := rSpeedL * (1.0 - rCreep) * (1.0 - rJamSeverity) * (1.0 - rSlipSeverity * 0.6);
 IF rBeltSpeed < 0.0 THEN
     rBeltSpeed := 0.0;
 END_IF
 
-rPosition := rPosition + rBeltSpeed * CYCLE_T;
-IF rPosition >= POS_WRAP THEN
-    rPosition := rPosition - POS_WRAP;
+rPosTrue := rPosTrue + rBeltSpeed * CYCLE_T;
+IF rPosTrue >= POS_WRAP THEN
+    rPosTrue := rPosTrue - POS_WRAP;
 END_IF
 
-// ---------------- 6. sensor model ----------------
-rCurrentTarget := CUR_IDLE
-                + rSpeed * CUR_PER_SPEED
-                + rJamSeverity * 14.0
-                + rOverloadLevel * 6.0
-                - rSlipSeverity * 1.5;
+rTmp := DINT_TO_LREAL(LREAL_TO_DINT(rPosTrue / ENC_RES)) * ENC_RES;
+IF rTmp >= POS_WRAP THEN
+    rTmp := rTmp - POS_WRAP;
+END_IF
+rPosition := LREAL_TO_REAL(rTmp);
 
-IF (eState = Stopped) OR (eState = Faulted) THEN
+// ---------------- 7. sensor model ----------------
+// motor current
+rCurrentTarget := CUR_IDLE
+                + rSpeedL * CUR_PER_SPEED
+                + rJamSeverity * 14.0
+                + (rOverloadLevel + rLoad) * LOAD_CUR
+                - rSlipSeverity * 1.5;
+IF NOT bMotorOn THEN
     rCurrentTarget := 0.0;
 END_IF
 
 rCurrentClean := rCurrentClean + (rCurrentTarget - rCurrentClean) * K_CURRENT;
-IF (eState = Stopped) OR (eState = Faulted) THEN
-    rMotorCurrent := rCurrentClean;     // motor off: smooth decay to 0, no rectified noise
+
+IF bMotorOn THEN
+    rCurSpike := 0.0;
+    IF aUni[0] < CUR_SPIKE_P THEN
+        rCurSpike := CUR_SPIKE_MIN + aUni[1] * (CUR_SPIKE_MAX - CUR_SPIKE_MIN);
+        IF aUni[2] < 0.5 THEN
+            rCurSpike := -rCurSpike;
+        END_IF
+    END_IF
+    rTmp := rCurrentClean + rNoise * 0.04 + aGauss[0] * CUR_NOISE + rCurSpike;
 ELSE
-    rMotorCurrent := rCurrentClean + rNoise * 0.04 + aGauss[0] * CUR_NOISE;
+    rTmp := rCurrentClean;              // motor off: smooth decay to 0
 END_IF
-IF rMotorCurrent < 0.0 THEN
-    rMotorCurrent := 0.0;
+IF rTmp < 0.0 THEN
+    rTmp := 0.0;
 END_IF
+rMotorCurrent := LREAL_TO_REAL(DINT_TO_LREAL(LREAL_TO_DINT(rTmp / CUR_RES)) * CUR_RES);
 
-rMotorTarget := rAmbientTemp
-              + rSpeed * MOTOR_PER_SPEED
-              + rOverloadLevel * 35.0
+// motor temperature
+rMotorTarget := rAmbientTrue
+              + rSpeedL * MOTOR_PER_SPEED
+              + (rOverloadLevel + rLoad) * LOAD_MOTOR
               + rJamSeverity * 10.0;
-
-IF (eState = Stopped) OR (eState = Faulted) THEN
-    rMotorTarget := rAmbientTemp;
+IF NOT bMotorOn THEN
+    rMotorTarget := rAmbientTrue;
 END_IF
 
 rMotorTempClean := rMotorTempClean + (rMotorTarget - rMotorTempClean) * K_MOTOR;
-rMotorTemp      := LREAL_TO_REAL(rMotorTempClean) + aGauss[2] * TEMP_NOISE;
+rTmp := rMotorTempClean + aGauss[2] * TEMP_NOISE;
+rMotorTemp := LREAL_TO_REAL(DINT_TO_LREAL(LREAL_TO_DINT(rTmp / TEMP_RES)) * TEMP_RES);
 
-rBearingTarget := rAmbientTemp
-                + rSpeed * BEAR_PER_SPEED
+// bearing temperature
+rBearingTarget := rAmbientTrue
+                + rSpeedL * BEAR_PER_SPEED
                 + rBearingWear * 28.0
-                + rSlipSeverity * 8.0;
-
-IF (eState = Stopped) OR (eState = Faulted) THEN
-    rBearingTarget := rAmbientTemp;
+                + rSlipSeverity * 8.0
+                + rLoad * LOAD_BEAR;
+IF NOT bMotorOn THEN
+    rBearingTarget := rAmbientTrue;
 END_IF
 
 rBearingTempClean := rBearingTempClean + (rBearingTarget - rBearingTempClean) * K_BEARING;
-rBearingTemp      := LREAL_TO_REAL(rBearingTempClean) + aGauss[3] * TEMP_NOISE;
+rTmp := rBearingTempClean + aGauss[3] * TEMP_NOISE;
+rBearingTemp := LREAL_TO_REAL(DINT_TO_LREAL(LREAL_TO_DINT(rTmp / TEMP_RES)) * TEMP_RES);
 
-rVibration := VIB_BASE
-            + rSpeed * VIB_PER_SPEED
-            + rBearingWear * 4.5
-            + rJamSeverity * 7.0
-            + rSlipSeverity * 2.5
-            + rOverloadLevel * 1.2;
+// vibration (RMS-like): convex in wear, noise proportional to level, rare positive impacts
+rVibClean := VIB_BASE
+           + rSpeedL * VIB_PER_SPEED
+           + VIB_WEAR * rBearingWear * rBearingWear
+           + rJamSeverity * 7.0
+           + rSlipSeverity * 2.5
+           + rOverloadLevel * 1.2
+           + rLoad * LOAD_VIB;
 
-IF (eState = Stopped) OR (eState = Faulted) THEN
-    rVibration := 0.0;
+IF bMotorOn THEN
+    rVibSpike := 0.0;
+    IF aUni[3] < VIB_SPIKE_P THEN
+        rVibSpike := VIB_SPIKE_MIN + aUni[4] * (VIB_SPIKE_MAX - VIB_SPIKE_MIN);
+    END_IF
+    rTmp := rVibClean
+          + rNoise * 0.04
+          + aGauss[1] * (VIB_NOISE_REL * rVibClean + VIB_NOISE_ABS)
+          + rVibSpike;
 ELSE
-    rVibration := rVibration + rNoise * 0.04 + aGauss[1] * VIB_NOISE;
+    rTmp := 0.0;
 END_IF
-
-IF rVibration < 0.0 THEN
-    rVibration := 0.0;
-END_IF]]></ST>
+IF rTmp < 0.0 THEN
+    rTmp := 0.0;
+END_IF
+rVibration := LREAL_TO_REAL(DINT_TO_LREAL(LREAL_TO_DINT(rTmp / VIB_RES)) * VIB_RES);]]></ST>
     </Implementation>
   </POU>
 </TcPlcObject>
