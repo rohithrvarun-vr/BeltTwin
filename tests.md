@@ -165,7 +165,7 @@ With Unity playing, `Restart-Service mosquitto` produced NO DATA and a grey belt
 
 **Cold-start miss (27 Sep, 11:18):** a jam injected 21 s after START was not detected. That's expected: the detector needs 30 s of Running data before it predicts at all, and a cold machine is outside the training distribution (see A8, limitation 3).
 
-**MQTT last will (`detector_offline`):** **Verified 27 Sep:** closing the detector window (a simulated crash) made the broker publish the last-will message, and Unity showed "RF: detector offline" within seconds.
+**MQTT last will (`detector_offline`):** *(TODO: close the detector window with its X, not Ctrl+C, and confirm Unity shows "RF: detector offline".)*
 
 ---
 
