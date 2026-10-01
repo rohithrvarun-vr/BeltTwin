@@ -3,13 +3,13 @@
 System: TwinCAT 3 PLC (10 ms task) → OPC UA (TF6100) → Node-RED (4 Hz) → MQTT → Unity twin, plus CSV logging, scenario runner and live RF detector. All measurements were taken on a single PC (Windows, TwinCAT 4026.24, Node-RED 5.0.4, Unity 2022.3.61f1).
 
 **How to read this document.**
-- **Part A** is the current system, sensor model v2 from 24 Sep 2026. It is what the dataset and ML results are based on.
+- **Part A** is the current system. A1–A9 describe sensor model v2 (24 Sep 2026), which the Phase 1 dataset and ML results are based on. **A10–A11 describe sensor model v3 and the v3 runner (29 Sep 2026), which Phase 2 is based on.** A5 (latency) is current for both.
 - **Part B** is the history: measurements on sensor model v1 (17–22 Sep). They're kept for traceability, and each one is marked as still valid or superseded.
 - "TODO" means not yet measured or tested. Don't quote those items anywhere.
 
 ---
 
-# Part A — Current system (sensor model v2)
+# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A12)
 
 ## A1. Sensor model v2 (PLC change, 24 Sep)
 
@@ -78,9 +78,13 @@ Measured by the scenario runner, as `trip_ts − inject_ts` in the manifest. **T
 
 ---
 
-## A5. End-to-end latency, PLC scan to subscriber (25 Sep)
+## A5. End-to-end latency, PLC scan to subscriber
 
-`latency_probe.py`, 240 samples at 4 Hz. The PLC timestamp comes from `nPlcTime` (see A4).
+Measured with `latency_probe.py`, 240 samples at 4 Hz each. The PLC timestamp comes from `nPlcTime` (see A4).
+
+**Definition:** this is the latency of a *sampled value*, from the PLC scan that produced it to the MQTT subscriber. An event in the PLC additionally waits 0–250 ms for the next 4 Hz poll. Don't quote these numbers as "fault to display".
+
+### Before: separate poll and publish timers (25 Sep)
 
 | Hop | min | median | p95 | max (ms) |
 |---|---|---|---|---|
@@ -89,11 +93,24 @@ Measured by the scenario runner, as `trip_ts − inject_ts` in the manifest. **T
 | Publish → MQTT subscriber | 2 | 4 | 5 | 16 |
 | **Total: PLC scan → subscriber** | **167** | **214** | **226** | **229** |
 
-**Finding: 72 % of the latency is the Node-RED design, not the protocols.** Poll and publish are two independent 4 Hz timers, so a fresh value waits in the cache for the next publish tick. The fix, publishing on arrival of a new `nPlcTime`, is deferred until after the data campaign, so row timing stays consistent within the dataset. Expected result: about 60–90 ms total. *(TODO: re-measure after the fix.)*
+**Finding: 72 % of the latency was the Node-RED design, not the protocols.** Poll and publish were two independent 4 Hz timers, so a fresh value waited in the cache for the next publish tick.
 
-**Unity, same day:** MQTT hop 8 / p95 18 ms, and data age (OPC UA read → display) 174 / p95 192 ms, both over 240 samples. PLC scan → display is therefore about 230 ms median. That's an estimate from adding the hops, not a direct measurement.
+### After: publish on arrival (29 Sep)
 
-**Caveats:** `nPlcTime` resolution is 10 ms, and the method assumes the TwinCAT and Windows clocks are aligned. There were no negative ages, so any offset is small but not proven to be zero.
+**The fix:** `fan-out` opens a batch on every poll. `cache` emits a trigger once all 26 variables of the batch have arrived, and `build json` publishes immediately (only if `nPlcTime` changed). The old 4 Hz publish timer became a 1 Hz watchdog that only updates the stale status.
+
+| Hop | Run 1 (idle) min / median / p95 / max | Run 2 (during campaign v3) min / median / p95 / max |
+|---|---|---|
+| PLC scan → OPC UA read complete | 13 / 28 / 43 / 70 | 19 / 29 / 43 / 81 |
+| Read → Node-RED publish | 1 / 2 / 5 / 8 | 1 / 2 / 4 / 22 |
+| Publish → MQTT subscriber | 1 / 2 / 3 / 14 | 1 / 2 / 3 / 3 |
+| **Total: PLC scan → subscriber** | **16 / 32 / 48 / 75** | **22 / 32 / 47 / 86** |
+
+**Result: 214 → 32 ms median, 226 → 47–48 ms p95,** reproduced under the runner's campaign load. The predicted 60–90 ms was beaten because the first hop also fell, from 57 to 28–29 ms median. **That drop is not explained.** Less contention in Node-RED without the second timer is plausible but unverified; don't state it as the cause.
+
+**Unity (25 Sep, before the fix):** MQTT hop 8 / p95 18 ms, and data age (OPC UA read → display) 174 / p95 192 ms, both over 240 samples. *(TODO: re-measure Unity after the fix.)*
+
+**Caveats:** `nPlcTime` resolution is 10 ms, and the method assumes the TwinCAT and Windows clocks are aligned. There were no negative ages in any run, so any offset is small but not proven to be zero.
 
 **This supersedes the earlier 197 / 221 ms figure,** which covered only OPC UA read → Unity and excluded the PLC side.
 
@@ -166,6 +183,144 @@ With Unity playing, `Restart-Service mosquitto` produced NO DATA and a grey belt
 **Cold-start miss (27 Sep, 11:18):** a jam injected 21 s after START was not detected. That's expected: the detector needs 30 s of Running data before it predicts at all, and a cold machine is outside the training distribution (see A8, limitation 3).
 
 **MQTT last will (`detector_offline`):** *(TODO: close the detector window with its X, not Ctrl+C, and confirm Unity shows "RF: detector offline".)*
+
+---
+
+## A10. Sensor model v3 (PLC change, 29 Sep)
+
+Purpose: realism before Phase 2 (residual-based detection). The healthy plant (gains, thermal time constants, fault signatures at trip) is unchanged from v2. Commit `5648c42`; v2 is tagged `sensor-v2-final`.
+
+| Element | v3 | Reason |
+|---|---|---|
+| Random source | Box-Muller on xorshift32, tails to about 6.6σ | v2 summed 4 uniforms, which clips at ±3.46σ and would fake zero false alarms for any threshold above that |
+| Load disturbance (hidden) | Two OU processes, σ 0.04 each, τ 20 s and 600 s, clamped ±0.25. Same current (6 A) and motor-temperature (35 °C) coefficients as overload; bearing +5 °C, vibration +1.2 per unit | Overload is extra load, so an unmeasured load is the realistic confounder. Expected current wander about ±0.34 A against +4.8 A at trip |
+| Belt creep | 1 % + 0.10 × load | A healthy belt never runs at drum speed; removes the perfect belt ratio |
+| Encoder | `rPosition` quantised to 0.25 units | Belt-ratio noise about 1.0 % per sample at speed 40, 0.5 % at 80 |
+| Ambient | True: OU around 22 °C, σ 1.0 °C, τ 1 h. Sensor: σ 0.05 °C, 0.1 °C resolution | Thermal models follow real ambient, so the behaviour model must use `rAmbientTemp` |
+| Temperatures | σ 0.08 °C, 0.1 °C resolution | EL3202-style resolution |
+| Current | σ 0.05 A, 0.01 A resolution | Load disturbance dominates |
+| Vibration | σ = 4 % of level + 0.02, 0.01 resolution | RMS noise scales with level |
+| Spikes | Current ±0.5–1.5 A, vibration +0.5–2.0, probability 10⁻⁴ per scan while running (about 1.4 per sensor per hour of samples) | Separates single-sample thresholds from persistence-based detectors |
+| Fault onset | Time to trip = nominal × log-uniform [0.5, 2]. Jam linear (1–4 s). Slip (12.5–50 s), overload (25–100 s) and wear (200–800 s) quadratic: the rate starts at 0 | Progressive faults start slowly; trip time is no longer a learnable constant. No random dead time, on purpose (labels start at injection) |
+| Wear → vibration | 5.625 × wear² (3.6 at trip, as in v2) | Early wear is invisible in RMS vibration (P-F curve) |
+| `nInjectCount` | New OPC UA variable, +1 on every inject edge | Runner verifies every inject (A8 known issue) |
+| Precision | All severities, rates and filters LREAL | Quadratic onset starts at about 10⁻¹⁰ per scan; REAL would stall |
+
+**Not modelled, on purpose:** noise on `rSpeed` (it is the behaviour model's exogenous input), sensor dropouts, measuring-wheel eccentricity.
+
+**The PLC trip is an oracle.** It fires on hidden severity ≥ 0.8, so in Phase 2 it is the functional-failure event (ground truth), not a detector. The fixed-threshold baseline is computed offline on measured signals only.
+
+**Verified (29 Sep):**
+- Build: 0 errors. Boot project activated at 10:05 (`Port_851.app`, `.crc`, `_boot.tizip`).
+- UaExpert: **26 variables** under `MAIN`, all Good, `nInjectCount` present; no hidden internals (`rLoad`, `rAmbientTrue`, `aGauss`) visible.
+- Jam injected from UaExpert: `nInjectCount` 0 → 1 at 10:19:19.262, `eState` 3 and `eFaultCode` 1 at 10:19:21.262 (2.0 s, inside 1–4 s). `rPosition` 102.5 (a multiple of 0.25). Temperatures on 0.1 °C steps. Current decayed smoothly to 0 after the trip.
+- After reset, motor temperature fell from 32.1 to 22 °C within about 20 min, consistent with the 60 s time constant.
+
+**Healthy v3 noise bands:** *(TODO: measure from campaign v3 healthy and soak runs.)*
+
+---
+
+## A11. Scenario runner v3 and dry run (29 Sep)
+
+Commit `0f3a399` (`nodered/scenario_runner.js`, `nodered/flows.json`).
+
+**Changes:**
+- Data goes to `data\v3\` (campaign) or `data\v3dry\` (dry run). The v2 manifest is never read, so resume can't mistake v2 runs for v3 runs.
+- **Inject verification:** `nInjectCount` must rise by exactly 1 within 2 s; up to 3 tries; a rise of 2 is recorded as `double_inject`.
+- **Maintenance verification** through `nMaintenanceCount`, up to 3 tries.
+- **Settle is slope-based:** after at least 240 s, the 60 s regression slope must be below 0.01 °C/s (motor) and 0.004 °C/s (bearing), held for 10 ticks. The v2 criterion (10 s mean within 0.15 °C of `ambient + k·speed`) would time out under v3 load and ambient disturbances. Simulated against the v3 model: warm-up 4–9 min, bearing within 0.6 °C of equilibrium at settle.
+- Timeouts cover twice the nominal trip time: jam 15, slip 90, overload 150, wear 1000 s.
+- Plan: 150 runs = 25 per fault type, 20 healthy, 20 healthy with a speed change, 10 soak runs of 30 min, over speeds 40–80, shuffled. The runner refuses to start if `nInjectCount` isn't in the cache.
+- CSV rows include `nInjectCount`, so the exact injection sample can be recovered offline.
+- Manifest adds `inject_tries` and `maint_tries`.
+
+**Tested before deployment** against a mock PLC: full dry plan; a lost jam inject (retried, `ok`, 2 tries); a lost maintenance write (retried, `ok`); an inject that never arrives (`inject_write_failed` after 3 tries); a delayed inject that lands twice (`double_inject`).
+
+**Dry run on the real system, 4 / 4 `ok`:**
+
+| Run | Warm-up | Inject → trip | `inject_tries` | `maint_tries` | Stale ticks |
+|---|---|---|---|---|---|
+| jam @ 80 | 407 s | 3.50 s | 1 | 1 | 0 |
+| slip @ 60 | 245 s | 39.06 s | 1 | 1 | 0 |
+| overload @ 40 | 315 s | 34.57 s | 1 | 1 | 0 |
+| healthy_change 60 → 40 | 309 s | — | — | 1 | 0 |
+
+Trip times include the runner's roughly 0.5 s read lag. Wear was not part of the dry run.
+
+**CSV check (jam run):** phase row counts at 4 Hz match the manifest exactly: warmup 1629 rows (407 s), healthy 149 (37 s, hold 37 s), developing 14 (3.5 s), faulted 42 (10.5 s). `nInjectCount` present (1 → 2).
+
+**Campaign v3 (29–30 Sep): 150 / 150 `ok`, 0 stale ticks,** every run type exactly on target (jam, slip, overload, wear 25 each; healthy 20; healthy_change 20; soak 10). About 25.0 h of data at 4 Hz (360k samples), backed up as `BeltTwin_v3_dataset_2026-09-30.zip` (156 files, 6.98 MB, on Google Drive). A 5-hour internet outage during the campaign had no effect: the pipeline is local only.
+
+- **Inject writes:** 99 / 100 landed on the first try, 1 needed a retry (caught by the verification; run `ok`). **Maintenance writes:** 150 / 150 on the first try. Lost writes still happen occasionally (1 of 250 here, about 3 % in v2; too few events to claim a difference). The cause is unknown; verification makes it harmless.
+- **Time to trip (inject → trip, runner-side):** jam 1.5–4.0 s (median 2.0), slip 13.0–48.1 s (24.5), overload 27.6–86.8 s (51.6), wear 201–775 s (379). All inside the v3 design ranges.
+- **Warm-up:** 245–501 s (median 289 s).
+
+**Boot-project autostart (30 Sep):** it was **off**, not just unverified as the Phase 1 handoff said. Enabled (commit `ec977c6`) and verified: after Activate Configuration, `nPlcTime` ticked in UaExpert without Login or F5. Before that, UaExpert showed `BadDeviceFailure` after a reboot.
+
+---
+
+## A12. Behaviour model and residuals (Phase 2, step 4, 30 Sep)
+
+Scripts: `ml/make_split.py` (run once), `ml/split_v3.csv` (committed), `ml/behaviour_model.py`. Parameters in `ml/behaviour_v3.json`; residuals per run in `data\v3\residuals\`.
+
+**Pre-registered split (fixed before any model was fitted):** jam, slip, overload 15 train / 10 test each; healthy 12/8; healthy_change 12/8; soak 6/4; **wear 0 / 25** (the unseen fault). Spread evenly over speeds, seed 20260930.
+
+**Protocol:** the model is fitted only on the healthy segments of train runs (everything before the first `nInjectCount` increment), 11.3 h. Train-run residuals are **out-of-fold** (4 folds grouped by run), so detector tuning never sees a residual from a model fitted on the same run. Test runs get residuals from the model fitted on all train runs. All statistics below are train-only, out-of-fold. **Test runs have not been summarised.** (Changed from the original plan to check the model on healthy test runs: that would have spent the test set on model development.)
+
+**Inputs:** `rSpeed`, `rAmbientTemp`, motor on (eState 1 or 2). Nothing fault-affected.
+
+| Output | Model | Identified | v3 PLC truth |
+|---|---|---|---|
+| Motor temperature | first-order output-error simulation from the run's start | τ 59.7 s, gain 0.515 °C per speed unit, offset −0.94 °C, load gain 5.84 °C/A | τ 59.9 s, 0.5, 0, 35/6 = 5.83 |
+| Bearing temperature | same | τ 119.7 s, 0.177, −0.14 °C, 0.827 °C/A | 120.0 s, 0.175, 0, 5/6 = 0.833 |
+| Current | same structure, fast lag | τ 0.57 s, 1.84 A + 0.0901 A per speed unit | 0.5 s, 2.0 + 0.0875 |
+| Vibration | static, σ = 0.051 + 0.038 × level | 0.170 + 0.0255 per speed unit; load gain 0.199 per A | 0.2 + 0.025; 1.2/6 = 0.2 |
+| Belt ratio | 2 s window | 0.990 | 1 % creep |
+
+**Model order was chosen from the data:** a second-order thermal model gave no improvement in grouped CV (motor 1.578 vs 1.578 °C, bearing 0.2104 vs 0.2106 °C), so first order was kept.
+
+**Two residual families:**
+- **Input-only** (`current`, `motor`, `bearing`, `vib`, `ratio`): sensitive to everything that departs from the healthy model, including the unmeasured load.
+- **Load-compensated** (`motor_lc`, `bearing_lc`, `vib_lc`): the current residual is used as a load proxy. It explains the healthy temperature wander almost completely (correlation 0.985 between the motor residual and the current-based load estimate). **Overload is extra load, so `_lc` residuals are blind to overload by construction**; the current residual still carries it.
+
+**Residual σ (out-of-fold, healthy, motor on, after 60 s):**
+
+| Channel | σ | Expected floor |
+|---|---|---|
+| current | 0.367 A | about 0.35 A (noise + load) |
+| motor | 1.63 °C | about 1.5 °C (load through 60 s dynamics) |
+| bearing | 0.215 °C | about 0.22 °C |
+| vib | 0.117 | about 0.13 at speed 80 |
+| ratio (2 s) | 0.0068 | about 0.006 (creep + encoder) |
+| **motor_lc** | **0.087 °C** | sensor noise floor about 0.085 °C |
+| **bearing_lc** | **0.086 °C** | same |
+| vib_lc | 0.094 | |
+
+Load compensation cuts the motor-temperature residual about 19× and the bearing residual 2.5×, to the sensor noise floor. The bearing gain matters for the unseen fault: wear heats the bearing but adds no current.
+
+**Acceptance criteria (stated before fitting):**
+1. *Bias below 0.2σ at every speed and warm-up stage:* **met** for all `_lc` channels, all 95 % run-bootstrap CIs include 0. For the input-only temperature residuals, every CI includes 0, but point estimates reach 0.38σ in segments after 480 s (soak runs). Cause: the slow load gives each run its own offset (per-run mean residual −1.3σ to +1.2σ, 5th–95th percentile), and there are only 6 train soak runs. The bias of input-only residuals can't be pinned down below about ±0.3σ with this data.
+2. *σ within 20 % of the floor:* **met** for all channels.
+3. *No warm-up bias:* **met**, after two fixes found by this check (below).
+
+**Two bugs found by the warm-up check, both fixed:**
+- **Biased time constant.** Fitting the motor model without the load proxy gave τ = 66 s instead of 60 s. A synthetic check (same inputs, known τ = 60 s, simulated load) gave 56–65 s across 8 load realisations: the unmeasured load confounds identification. Fitting jointly with the current residual as an auxiliary input gives 59.7 s. The input-only residual reuses those dynamics.
+- **Initial-state error.** The simulated thermal state was initialised with the mean of the first 8 samples. A motor still cooling from the previous run (about 0.5 °C/s) made that mean about 1 s late and started the simulation about 0.5 °C off, decaying with τ. Now a line is fitted through the first 8 samples and extrapolated to the start.
+
+**Sanity check on train fault runs only** (median z over the 2 s before the trip):
+
+| | jam | overload | slip |
+|---|---|---|---|
+| current | +10.2 | +11.8 | −3.0 |
+| vib | +29.1 | +7.7 | +16.3 |
+| ratio | −18.8 | +0.3 | −60.8 |
+| motor_lc | −2.6 | +1.2 | +9.3 |
+
+The signs match the plant: slip lowers current, so `motor_lc` expects a cooler motor. Overload barely shows in the `_lc` residuals, as designed.
+
+**Pipeline finding:** single-sample belt ratios have σ about 2.3–2.8 %, against about 0.6 % expected. Cause: `rPosition` and `nPlcTime` are separate OPC UA reads, so each row is not one PLC scan. Using the PLC clock over a 2 s window brings it to 0.68 %. *Fix (open): read all variables in one OPC UA Read call, or compute belt speed in the PLC.*
+
+**Honest limitation:** I designed the simulator, so the model structure was easy to get right. The order was still selected from the data and every coefficient was identified, not copied. The agreement with the PLC constants is a check on the identification, not a result.
 
 ---
 
