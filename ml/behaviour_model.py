@@ -19,7 +19,7 @@ Model (inputs: rSpeed, rAmbientTemp, motor on = eState 1 or 2; nothing fault-aff
   vibration     static on*(v0 + v1*speed), sigma grows linearly with level
   belt ratio    2 s window: dPosition / (dt_plc * speed), constant healthy value
 Load-compensated residuals (suffix _lc): the unmeasured load is visible in the current residual;
-regressing it out of the temperature and vibration residuals removes most healthy wander.
+using it as an extra input removes most healthy wander from temperatures, vibration and belt ratio.
 Overload IS extra load, so _lc residuals are blind to overload by construction.
 """
 import sys, os, json
@@ -31,8 +31,8 @@ from scipy.optimize import least_squares
 DT = 0.25                 # nominal sample period, s
 N_FOLDS, FOLD_SEED = 4, 20260930
 RATIO_WIN = 8             # samples in the belt-ratio window (2 s)
-INIT_N = 8                # samples used to estimate the initial thermal state
-CHANNELS = ["current", "motor", "bearing", "vib", "ratio", "motor_lc", "bearing_lc", "vib_lc"]
+INIT_N = 120              # samples (30 s) used to estimate the initial thermal state; not monitored
+CHANNELS = ["current", "motor", "bearing", "vib", "ratio", "motor_lc", "bearing_lc", "vib_lc", "ratio_lc"]
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -62,24 +62,36 @@ def lag(a, u, y0):
     return y
 
 
-def sim_temp(p, d, col, load=None):
-    """p = (a, b, c) or (a, b, c, k). With k and a load proxy, k*load is added to the steady state."""
+def sim_temp(p, d, col, load=None, x0=None):
+    """p = (a, b, c) or (a, b, c, k). With k and a load proxy, k*load is added to the steady state.
+    The response is forced(inputs) + (1-a)^(k+1) * x0. If x0 is None it is estimated by least
+    squares from the first INIT_N samples (state estimation; those samples are not monitored)."""
     a, b, c = p[:3]
     tss = d.rAmbientTemp.values + d.on.values * (b * d.rSpeed.values + c)
     if load is not None and len(p) > 3:
         tss = tss + p[3] * load
-    return lag(a, tss, initial_state(d[col].values))
+    forced = lag(a, tss, 0.0)
+    g = (1.0 - a) ** (np.arange(len(tss)) + 1.0)
+    if x0 is None:
+        x0 = initial_state(d[col].values, forced, g)
+    return forced + g * x0
 
 
-def initial_state(y):
-    """State just before the first sample: a straight line through the first INIT_N samples,
-    extrapolated to index -1. A plain mean is centred about 1 s late, and a motor that is
-    still cooling from the previous run then starts about 0.5 degC off."""
+def initial_state(y, forced, g):
+    """Least-squares initial thermal state from the first INIT_N samples, given the model's forced
+    response. A plain mean of the first samples was about 1 s late on a still-cooling motor, and a
+    2 s line fit left about 1 sigma of error that decayed over minutes and fed false CUSUM alarms."""
     n = min(INIT_N, len(y))
-    if n < 2:
-        return float(y[0])
-    k, c = np.polyfit(np.arange(n), y[:n], 1)
-    return float(c - k)
+    e = y[:n] - forced[:n]
+    return float(np.dot(g[:n], e) / np.dot(g[:n], g[:n]))
+
+
+def initial_state_lc(P, d, col, key, rc_on):
+    a, b, c, k = P[key]
+    tss = d.rAmbientTemp.values + d.on.values * (b * d.rSpeed.values + c) + k * rc_on
+    forced = lag(a, tss, 0.0)
+    g = (1.0 - a) ** (np.arange(len(tss)) + 1.0)
+    return initial_state(d[col].values, forced, g)
 
 
 def current_residual_on(P, d):
@@ -146,7 +158,18 @@ def fit(H):
     x = np.concatenate([q["load_vib"] for q in raw])[m]
     y = np.concatenate([q["vib"] for q in raw])[m]
     P["k_vib"] = float(np.dot(x, y) / np.dot(x, x))
+    # belt creep grows with load but cannot go below zero (belt never outruns the drum):
+    # ratio = 1 - max(0, creep0 + k * load_proxy)
+    br = np.concatenate([belt_ratio(d) for d in H])[m]
+    ok = ~np.isnan(br)
+    res = lambda p: (1.0 - np.maximum(0.0, p[0] + p[1] * x[ok])) - br[ok]
+    P["creep"] = least_squares(res, [0.01, 0.015], loss="soft_l1", f_scale=0.005).x.tolist()
     return P
+
+
+def pred_ratio_lc(P, load_proxy):
+    c0, k = P["creep"]
+    return 1.0 - np.maximum(0.0, c0 + k * load_proxy)
 
 
 def raw_residuals(P, d):
@@ -157,10 +180,13 @@ def raw_residuals(P, d):
     rc = d.rMotorCurrent.values - ic
     rc_on = np.where(on, rc, 0.0)
     out["current"] = np.where(on, rc, np.nan)
-    out["motor"] = d.rMotorTemp.values - sim_temp(P["motor"][:3], d, "rMotorTemp")
-    out["bearing"] = d.rBearingTemp.values - sim_temp(P["bearing"][:3], d, "rBearingTemp")
-    out["motor_lc"] = d.rMotorTemp.values - sim_temp(P["motor"], d, "rMotorTemp", rc_on)
-    out["bearing_lc"] = d.rBearingTemp.values - sim_temp(P["bearing"], d, "rBearingTemp", rc_on)
+    # one physical initial state per run, estimated with the load-compensated model
+    xm = initial_state_lc(P, d, "rMotorTemp", "motor", rc_on)
+    xb = initial_state_lc(P, d, "rBearingTemp", "bearing", rc_on)
+    guard = np.arange(len(d)) < INIT_N
+    for ch, col, key, x0 in (("motor", "rMotorTemp", "motor", xm), ("bearing", "rBearingTemp", "bearing", xb)):
+        out[ch] = np.where(guard, np.nan, d[col].values - sim_temp(P[key][:3], d, col, x0=x0))
+        out[ch + "_lc"] = np.where(guard, np.nan, d[col].values - sim_temp(P[key], d, col, rc_on, x0=x0))
     pv = pred_vib(P["vib"], d)
     out["vib"] = np.where(on, d.rVibration.values - pv, np.nan)
     out["ratio"] = belt_ratio(d) - P["ratio"]
@@ -175,6 +201,7 @@ def residuals(P, d):
     r["motor_lc"] = q["motor_lc"]
     r["bearing_lc"] = q["bearing_lc"]
     r["vib_lc"] = np.where(d.on.values > 0, q["vib"] - P.get("k_vib", 0) * q["load_vib"], np.nan)
+    r["ratio_lc"] = (q["ratio"] + P["ratio"]) - pred_ratio_lc(P, q["load_vib"])
     r["vib_level"] = q["vib_level"]
     return r
 
@@ -302,7 +329,7 @@ def main(data_dir):
     print(f"  current  tau {tau(P['current'][0]):6.2f} s   c0 {P['current'][1]:.3f}   c1 {P['current'][2]:.4f}")
     print(f"  vib      v0 {P['vib'][0]:.3f}   v1 {P['vib'][1]:.4f}   sigma {P['vib_sigma'][0]:.3f} + {P['vib_sigma'][1]:.3f}*level")
     print(f"  ratio    {P['ratio']:.4f}")
-    print(f"  vib load gain {P['k_vib']:.3f} per A")
+    print(f"  vib load gain {P['k_vib']:.3f} per A   belt creep {P['creep'][0]:.4f} + {P['creep'][1]:.4f} per A (>= 0)")
     report(runs, {k: R_oof[k] for k in train}, S)
     print(f"\nwrote {os.path.join(HERE, 'behaviour_v3.json')} and {len(split)} files in {out_dir}")
 

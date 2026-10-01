@@ -9,7 +9,7 @@ System: TwinCAT 3 PLC (10 ms task) → OPC UA (TF6100) → Node-RED (4 Hz) → M
 
 ---
 
-# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A12)
+# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A13)
 
 ## A1. Sensor model v2 (PLC change, 24 Sep)
 
@@ -271,17 +271,17 @@ Scripts: `ml/make_split.py` (run once), `ml/split_v3.csv` (committed), `ml/behav
 
 | Output | Model | Identified | v3 PLC truth |
 |---|---|---|---|
-| Motor temperature | first-order output-error simulation from the run's start | τ 59.7 s, gain 0.515 °C per speed unit, offset −0.94 °C, load gain 5.84 °C/A | τ 59.9 s, 0.5, 0, 35/6 = 5.83 |
-| Bearing temperature | same | τ 119.7 s, 0.177, −0.14 °C, 0.827 °C/A | 120.0 s, 0.175, 0, 5/6 = 0.833 |
+| Motor temperature | first-order output-error simulation from the run's start | τ 59.7 s, gain 0.515 °C per speed unit, offset −0.95 °C, load gain 5.83 °C/A | τ 59.9 s, 0.5, 0, 35/6 = 5.83 |
+| Bearing temperature | same | τ 119.8 s, 0.177, −0.14 °C, 0.831 °C/A | 120.0 s, 0.175, 0, 5/6 = 0.833 |
 | Current | same structure, fast lag | τ 0.57 s, 1.84 A + 0.0901 A per speed unit | 0.5 s, 2.0 + 0.0875 |
 | Vibration | static, σ = 0.051 + 0.038 × level | 0.170 + 0.0255 per speed unit; load gain 0.199 per A | 0.2 + 0.025; 1.2/6 = 0.2 |
-| Belt ratio | 2 s window | 0.990 | 1 % creep |
+| Belt ratio | 2 s window; load-compensated: 1 − max(0, creep0 + k × load proxy) | 0.990; creep 0.0099 + 0.0168 per A | creep 0.01 + 0.10 × load = 0.01 + 0.0167 per A, clamped at 0 |
 
 **Model order was chosen from the data:** a second-order thermal model gave no improvement in grouped CV (motor 1.578 vs 1.578 °C, bearing 0.2104 vs 0.2106 °C), so first order was kept.
 
 **Two residual families:**
 - **Input-only** (`current`, `motor`, `bearing`, `vib`, `ratio`): sensitive to everything that departs from the healthy model, including the unmeasured load.
-- **Load-compensated** (`motor_lc`, `bearing_lc`, `vib_lc`): the current residual is used as a load proxy. It explains the healthy temperature wander almost completely (correlation 0.985 between the motor residual and the current-based load estimate). **Overload is extra load, so `_lc` residuals are blind to overload by construction**; the current residual still carries it.
+- **Load-compensated** (`motor_lc`, `bearing_lc`, `vib_lc`, `ratio_lc`): the current residual is used as a load proxy. It explains the healthy temperature wander almost completely (correlation 0.985 between the motor residual and the current-based load estimate). **Overload is extra load, so `_lc` residuals are blind to overload by construction**; the current residual still carries it.
 
 **Residual σ (out-of-fold, healthy, motor on, after 60 s):**
 
@@ -293,19 +293,20 @@ Scripts: `ml/make_split.py` (run once), `ml/split_v3.csv` (committed), `ml/behav
 | vib | 0.117 | about 0.13 at speed 80 |
 | ratio (2 s) | 0.0068 | about 0.006 (creep + encoder) |
 | **motor_lc** | **0.087 °C** | sensor noise floor about 0.085 °C |
-| **bearing_lc** | **0.086 °C** | same |
+| **bearing_lc** | **0.085 °C** | same |
 | vib_lc | 0.094 | |
+| ratio_lc (2 s) | 0.0036 | |
 
 Load compensation cuts the motor-temperature residual about 19× and the bearing residual 2.5×, to the sensor noise floor. The bearing gain matters for the unseen fault: wear heats the bearing but adds no current.
 
 **Acceptance criteria (stated before fitting):**
-1. *Bias below 0.2σ at every speed and warm-up stage:* **met** for all `_lc` channels, all 95 % run-bootstrap CIs include 0. For the input-only temperature residuals, every CI includes 0, but point estimates reach 0.38σ in segments after 480 s (soak runs). Cause: the slow load gives each run its own offset (per-run mean residual −1.3σ to +1.2σ, 5th–95th percentile), and there are only 6 train soak runs. The bias of input-only residuals can't be pinned down below about ±0.3σ with this data.
+1. *Bias below 0.2σ at every speed and warm-up stage:* **met** for all `_lc` channels (largest point estimate 0.14σ; per-run mean residual within ±0.13σ for motor_lc and ±0.07σ for bearing_lc, 5th–95th percentile). For the input-only temperature residuals, every CI includes 0, but point estimates reach 0.38σ in segments after 480 s (soak runs). Cause: the slow load gives each run its own offset (per-run mean residual −1.3σ to +1.2σ, 5th–95th percentile), and there are only 6 train soak runs. The bias of input-only residuals can't be pinned down below about ±0.3σ with this data.
 2. *σ within 20 % of the floor:* **met** for all channels.
 3. *No warm-up bias:* **met**, after two fixes found by this check (below).
 
 **Two bugs found by the warm-up check, both fixed:**
 - **Biased time constant.** Fitting the motor model without the load proxy gave τ = 66 s instead of 60 s. A synthetic check (same inputs, known τ = 60 s, simulated load) gave 56–65 s across 8 load realisations: the unmeasured load confounds identification. Fitting jointly with the current residual as an auxiliary input gives 59.7 s. The input-only residual reuses those dynamics.
-- **Initial-state error.** The simulated thermal state was initialised with the mean of the first 8 samples. A motor still cooling from the previous run (about 0.5 °C/s) made that mean about 1 s late and started the simulation about 0.5 °C off, decaying with τ. Now a line is fitted through the first 8 samples and extrapolated to the start.
+- **Initial-state error.** The simulated thermal state was initialised with the mean of the first 8 samples. A motor still cooling from the previous run (about 0.5 °C/s) made that mean about 1 s late and started the simulation about 0.5 °C off, decaying with τ. A line through 8 samples fixed the bias but left about 1σ of random start error, which decayed over minutes and drove healthy CUSUM sums into the hundreds (found in step 5). **Final fix:** the initial state is estimated by least squares over the first 30 s with the load-compensated model, and **thermal residuals are not monitored during those 30 s** (state-estimation guard; faults are never injected that early).
 
 **Sanity check on train fault runs only** (median z over the 2 s before the trip):
 
@@ -318,9 +319,47 @@ Load compensation cuts the motor-temperature residual about 19× and the bearing
 
 The signs match the plant: slip lowers current, so `motor_lc` expects a cooler motor. Overload barely shows in the `_lc` residuals, as designed.
 
+**Belt creep saturates (found in step 5):** a linear load compensation of the belt ratio over-corrected when the load proxy was strongly negative, because creep cannot go below 0 (the belt never outruns the drum). Healthy CUSUM sums on `ratio_lc` reached 106. A saturating creep model fixed it.
+
 **Pipeline finding:** single-sample belt ratios have σ about 2.3–2.8 %, against about 0.6 % expected. Cause: `rPosition` and `nPlcTime` are separate OPC UA reads, so each row is not one PLC scan. Using the PLC clock over a 2 s window brings it to 0.68 %. *Fix (open): read all variables in one OPC UA Read call, or compute belt speed in the PLC.*
 
 **Honest limitation:** I designed the simulator, so the model structure was easy to get right. The order was still selected from the data and every coefficient was identified, not copied. The agreement with the PLC constants is a check on the identification, not a result.
+
+---
+
+## A13. Detectors, tuned on train runs (Phase 2, step 5, 1 Oct)
+
+Script: `ml/detectors.py`. Thresholds and settings in `ml/detectors_v3.json`; models `ml/iforest_v3.joblib`, `ml/rf_v3.joblib`.
+
+**Rules (fixed before any result):** every detector reduces to one statistic and one threshold, tuned on train runs only to the **same budget of 0.5 false alarms per healthy motor-on hour** (11.25 h, so at most 5 events). An alarm event is an upward threshold crossing while the motor is on. Detection is the first crossing between the injection sample (first `nInjectCount` increment) and the trip; delay is measured on the PLC clock, also as a fraction of time to trip. Isolation Forest and RF scores are out-of-fold (same 4 folds as the behaviour model). Wear is not in train. **The test set has not been used.**
+
+| Detector | Design |
+|---|---|
+| fixed | Static, speed-independent limits on measured signals: current, motor T, bearing T, vibration high, 2 s belt ratio low. Limits at the train-healthy 99.9th percentile × one common factor; 1 s debounce |
+| cusum | Two-sided CUSUM, k = 0.5, z clipped to ±4, on `current`, `vib_lc`, `ratio_lc`, `motor_lc`, `bearing_lc`. Channels with healthy lag-1 autocorrelation above 0.2 are pre-whitened with AR(1) (current 0.978, ratio_lc about 0.3) |
+| iforest | Isolation Forest on 2 s and 30 s means of 9 residual z channels, trained on healthy samples; 3-sample debounce |
+| rf | Random Forest on 31 raw-signal features (Phase 1 design), classes healthy / jam / slip / overload; statistic 1 − P(healthy); 3-sample debounce |
+
+**Train results** (thresholds tuned on the same data, so false-alarm rates are at or below budget by construction):
+
+| Detector | FA/h | jam | overload | slip |
+|---|---|---|---|---|
+| fixed | 0.44 | 15/15, 1.00 s (0.57) | 12/15, 28.0 s (0.78) | 15/15, 9.8 s (0.33) |
+| cusum | 0.36 | 8/15, 2.00 s (0.62) | 15/15, 16.3 s (0.41) | 15/15, 7.0 s (0.27) |
+| iforest | 0.44 | 6/15, 2.63 s (0.82) | 15/15, 27.3 s (0.76) | 14/15, 15.8 s (0.55) |
+| rf | 0.44 | 14/15, 0.75 s (0.39) | 15/15, 19.1 s (0.44) | 14/15, 7.8 s (0.29) |
+
+Cells: detected / runs, median delay after injection (median fraction of time to trip).
+
+**Reading (train only, not the result):**
+- **CUSUM on load-compensated residuals is the best detector for the progressive faults** (overload and slip), ahead of the supervised RF, without seeing a single fault in training.
+- **CUSUM misses half the jams.** A jam trips in 1–4 s, and with z clipped at 4 and k = 0.5 the sum gains at most 3.5 per sample, so reaching 27.8 takes 8 samples (2 s). The clip protects against spikes; the price is slow response to sudden faults. That's a known CUSUM trade-off (a Shewhart limit alongside would fix it, but it wasn't in the pre-stated design).
+- **Isolation Forest is the weakest.** It scores only "how unusual", with no direction or persistence, so its threshold is set by healthy outliers.
+- **Fixed thresholds** do well on jam and slip but miss 3 overloads: one static current limit across speeds 40–80 must sit above healthy current at speed 80.
+
+**Changes during step 5, all from healthy train diagnostics, none from fault delays:** (1) initial-state estimation over 30 s with a monitoring guard (A12); (2) saturating creep model for `ratio_lc` (A12); (3) AR(1) pre-whitening for CUSUM channels: without it, the load-driven autocorrelation of the current residual (lag-1 0.978) pushed healthy CUSUM sums above 2000.
+
+**Next (step 6):** apply the frozen thresholds and models to the test runs **once**: false alarms per hour on 8 healthy + 8 speed-change + 4 soak runs and the healthy segments of all test fault runs; detection and delay for jam, slip, overload and the **unseen wear** (25 runs).
 
 ---
 
