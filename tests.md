@@ -9,7 +9,7 @@ System: TwinCAT 3 PLC (10 ms task) → OPC UA (TF6100) → Node-RED (4 Hz) → M
 
 ---
 
-# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A13)
+# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A14)
 
 ## A1. Sensor model v2 (PLC change, 24 Sep)
 
@@ -347,9 +347,9 @@ Script: `ml/detectors.py`. Thresholds and settings in `ml/detectors_v3.json`; mo
 | fixed | 0.44 | 15/15, 1.00 s (0.57) | 12/15, 28.0 s (0.78) | 15/15, 9.8 s (0.33) |
 | cusum | 0.36 | 8/15, 2.00 s (0.62) | 15/15, 16.3 s (0.41) | 15/15, 7.0 s (0.27) |
 | iforest | 0.44 | 6/15, 2.63 s (0.82) | 15/15, 27.3 s (0.76) | 14/15, 15.8 s (0.55) |
-| rf | 0.44 | 14/15, 0.75 s (0.39) | 15/15, 19.1 s (0.44) | 14/15, 7.8 s (0.29) |
+| rf | 0.44 | 14/15, 0.75 s (0.38) | 15/15, 19.7 s (0.44) | 14/15, 7.8 s (0.28) |
 
-Cells: detected / runs, median delay after injection (median fraction of time to trip).
+Cells: detected / runs, median delay after injection (median fraction of time to trip). Numbers from the reference run on the project PC (scikit-learn version there: RF threshold 0.617; fixed, CUSUM and Isolation Forest identical to the development run).
 
 **Reading (train only, not the result):**
 - **CUSUM on load-compensated residuals is the best detector for the progressive faults** (overload and slip), ahead of the supervised RF, without seeing a single fault in training.
@@ -359,7 +359,47 @@ Cells: detected / runs, median delay after injection (median fraction of time to
 
 **Changes during step 5, all from healthy train diagnostics, none from fault delays:** (1) initial-state estimation over 30 s with a monitoring guard (A12); (2) saturating creep model for `ratio_lc` (A12); (3) AR(1) pre-whitening for CUSUM channels: without it, the load-driven autocorrelation of the current residual (lag-1 0.978) pushed healthy CUSUM sums above 2000.
 
-**Next (step 6):** apply the frozen thresholds and models to the test runs **once**: false alarms per hour on 8 healthy + 8 speed-change + 4 soak runs and the healthy segments of all test fault runs; detection and delay for jam, slip, overload and the **unseen wear** (25 runs).
+**Step 6 (test set, single evaluation): see A14.**
+
+---
+
+## A14. Test-set evaluation, single run (Phase 2, step 6, 2 Oct)
+
+Script: `ml/evaluate.py`. Frozen settings from step 5, nothing fitted or tuned. `ml/TEST_EVALUATED.txt` records the fingerprint of the frozen settings; the script refuses a second test evaluation if they change. Per-run results in `ml/results_test_v3.csv`. Before the test run, the script was checked on train runs only: fixed and CUSUM reproduced the step-5 numbers exactly.
+
+**Test set:** 75 runs (wear 25, jam 10, slip 10, overload 10, healthy 8, healthy_change 8, soak 4), **9.94 healthy motor-on hours**.
+
+**False alarms** (budget on train: 0.5 per hour; 95 % Poisson CI):
+
+| Detector | False alarms | Per hour | 95 % CI |
+|---|---|---|---|
+| fixed | 1 | 0.10 | [0.00, 0.56] |
+| cusum | 4 | 0.40 | [0.11, 1.03] |
+| iforest | 0 | 0.00 | [0.00, 0.37] |
+| rf | 7 | 0.70 | [0.28, 1.45] |
+
+**Detection** (detected / runs, median delay after injection, median fraction of time to trip in brackets; max fraction after the slash):
+
+| Fault | fixed | cusum | iforest | rf |
+|---|---|---|---|---|
+| jam | 9/10, 1.00 s (0.67 / 0.80) | 2/10, 1.88 s (0.88 / 0.89) | 0/10 | **10/10, 0.62 s (0.50 / 0.60)** |
+| slip | 10/10, 8.27 s (0.36 / 0.75) | **10/10, 5.76 s (0.30 / 0.39)** | 9/10, 12.3 s (0.62 / 0.98) | **10/10, 6.39 s (0.28 / 0.44)** |
+| overload | 9/10, 54.1 s (0.80 / 0.96) | **10/10, 25.9 s (0.37 / 0.46)** | 10/10, 42.9 s (0.65 / 0.78) | **10/10, 26.3 s (0.38 / 0.45)** |
+| **wear (unseen)** | 25/25, 227 s (0.71 / 0.81) | **25/25, 64.7 s (0.17 / 0.22)** | 20/25, 200 s (0.56 / 0.93) | 11/25, 334 s (0.97 / 1.00) |
+
+**Findings:**
+1. **On the unseen fault, the residual approach wins clearly.** CUSUM on load-compensated residuals detected all 25 wear runs at a median 17 % of time to trip (at most 22 %). The supervised Random Forest detected only 11 of 25, at a median 97 % of time to trip, essentially at the moment of failure. Fixed limits caught all 25, but at 71 %. This is the one difference in the table that is large compared with the sample sizes.
+2. **On the faults it was trained on, the RF is as good as CUSUM or better:** best on jam (10/10, 0.62 s), tied with CUSUM on slip (0.28 vs 0.30 of time to trip) and overload (0.38 vs 0.37). With 10 runs per fault, the slip and overload differences are within noise.
+3. **CUSUM misses most jams (2/10)**, as predicted from train (8/15). The sum needs about 8 samples (2 s) to reach the threshold and jams trip in 1–4 s. A known trade-off of the pre-stated design (z clipped at 4 against spikes); not changed after the test.
+4. **False alarms stayed near budget for fixed, CUSUM and Isolation Forest.** The RF rose from 0.44 (train, out-of-fold) to 0.70 per hour; the 95 % CI [0.28, 1.45] includes the budget, so this is a weak indication of overrun, not a proven one.
+5. **Train and test agree for CUSUM** (false alarms 0.36 → 0.40/h; overload 0.41 → 0.37 of time to trip; slip 0.27 → 0.30), so the tuning did not overfit.
+6. **Isolation Forest is the weakest overall** (0/10 jam, 5 wear misses), consistent with train.
+
+**Limitations to state with these numbers:**
+- **The data is simulated, and the simulator was written by the same person who designed the detectors.** In the v3 model, wear heats the bearing in proportion to wear from the start (through its 120 s time constant) while vibration only grows with wear². That is what lets an ambient- and load-compensated bearing-temperature residual see wear early. Real bearing degradation has different and less clean signatures; the size of the advantage should not be expected to carry over unchanged.
+- **Small samples:** 10 runs per trained fault type, 25 wear runs, 9.94 healthy test hours. False-alarm rates have wide CIs.
+- **Matched budget, not matched rate:** all detectors were tuned to the same false-alarm budget on train; on test the realised rates differ (RF highest).
+- **The PLC trip is the oracle failure event** (hidden severity ≥ 0.8), not a protection relay.
 
 ---
 
