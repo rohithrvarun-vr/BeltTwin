@@ -108,7 +108,9 @@ Measured with `latency_probe.py`, 240 samples at 4 Hz each. The PLC timestamp co
 
 **Result: 214 → 32 ms median, 226 → 47–48 ms p95,** reproduced under the runner's campaign load. The predicted 60–90 ms was beaten because the first hop also fell, from 57 to 28–29 ms median. **That drop is not explained.** Less contention in Node-RED without the second timer is plausible but unverified; don't state it as the cause.
 
-**Unity (25 Sep, before the fix):** MQTT hop 8 / p95 18 ms, and data age (OPC UA read → display) 174 / p95 192 ms, both over 240 samples. *(TODO: re-measure Unity after the fix.)*
+**Unity (25 Sep, before the fix):** MQTT hop 8 / p95 18 ms, and data age (OPC UA read → display) 174 / p95 192 ms, both over 240 samples.
+
+**Unity (2–3 Oct, after the fix),** from the HMI's own rolling 240-sample display, read off four screenshots: MQTT hop 8–12 / p95 15–21 ms, data age **11–14 / p95 20–27 ms**. Data age fell by about 160 ms, consistent with the 155 ms read → publish hop removed in Node-RED. (Display readings, not a logged measurement.)
 
 **Caveats:** `nPlcTime` resolution is 10 ms, and the method assumes the TwinCAT and Windows clocks are aligned. There were no negative ages in any run, so any offset is small but not proven to be zero.
 

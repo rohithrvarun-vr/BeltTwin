@@ -6,6 +6,14 @@ The project has two phases:
 - **Phase 1:** the end-to-end pipeline, a labelled dataset and a live Random Forest fault detector shown in Unity.
 - **Phase 2:** residual-based anomaly detection. A behaviour model of the healthy machine is identified from data, and four detectors are compared on a pre-registered test set, including a fault type that no detector saw during training.
 
+![Unity twin, running](docs/unity_running.png)
+
+*The Unity twin while running: an operator HMI in the ISA-101 style (grey by default, colour only for abnormal states) over a procedurally built factory hall. The stack light on the cabinet follows the PLC state. The fault-prediction panel shows the Phase 1 Random Forest, which was trained on sensor model v2; on v3 data its confidence is low.*
+
+![Unity twin, after a slip fault](docs/unity_fault.png)
+
+*After a belt-slip injection: the PLC trips (red banner, red stack light, red belt), and the trends overlay shows the current dropping at the trip. In this run the live RF called SLIP 6.5 s before the trip. That is one demonstration, not evidence; the evaluated numbers are below.*
+
 ![Architecture](docs/architecture.png)
 
 ## Key results
@@ -42,7 +50,7 @@ The OPC UA symbol filter exposes 26 operational variables. The hidden fault seve
 - Node-RED polls OPC UA at 4 Hz and detects stale data from the PLC clock: a stopped PLC still answers reads, so its frozen values looked live until this check.
 - It publishes JSON telemetry to MQTT and accepts commands only from a whitelist with range checks.
 - A resumable scenario runner executes data campaigns unattended: thermal settling, randomised run order, verified writes, a per-run manifest.
-- Unity subscribes over MQTT and shows the twin, fault banners and detector verdicts, with automatic reconnect.
+- Unity subscribes over MQTT and shows the twin with an operator HMI (process-value bars with limits, on-demand trends, controls separated from fault injection), fault banners and detector verdicts, with automatic reconnect. Data age at the display is about 12 ms median.
 
 **Behaviour model (Phase 2).**
 - First-order output-error models for motor and bearing temperature, plus static maps for current, vibration and belt ratio.
