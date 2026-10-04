@@ -1,6 +1,8 @@
 """BeltTwin Phase 2, step 4: behaviour model and residuals.
 
 Usage:  python ml/behaviour_model.py data/v3
+        python ml/behaviour_model.py data/simscape --tag sim   (split_sim.csv -> behaviour_sim.json)
+If rVibration is missing (all NaN, as in the Simscape data) the vibration channels are skipped.
 
 Fits a behaviour model of the HEALTHY conveyor on the healthy segments of the TRAIN runs only
 (ml/split_v3.csv), then writes residuals for every run:
@@ -31,6 +33,8 @@ from scipy.optimize import least_squares
 DT = 0.25                 # nominal sample period, s
 N_FOLDS, FOLD_SEED = 4, 20260930
 RATIO_WIN = 8             # samples in the belt-ratio window (2 s)
+QUAD_SPEED = False        # steady-state temperature quadratic in speed (selected per dataset by grouped CV)
+SPEED_TOL = 0.0           # steady-speed test: PLC rSpeed is exactly constant; Simscape gets 0.05 (tiny wander)
 INIT_N = 120              # samples (30 s) used to estimate the initial thermal state; not monitored
 CHANNELS = ["current", "motor", "bearing", "vib", "ratio", "motor_lc", "bearing_lc", "vib_lc", "ratio_lc"]
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -68,6 +72,8 @@ def sim_temp(p, d, col, load=None, x0=None):
     squares from the first INIT_N samples (state estimation; those samples are not monitored)."""
     a, b, c = p[:3]
     tss = d.rAmbientTemp.values + d.on.values * (b * d.rSpeed.values + c)
+    if len(p) > 4:                                   # optional speed^2 term (selected per dataset)
+        tss = tss + d.on.values * p[4] * d.rSpeed.values ** 2
     if load is not None and len(p) > 3:
         tss = tss + p[3] * load
     forced = lag(a, tss, 0.0)
@@ -87,8 +93,9 @@ def initial_state(y, forced, g):
 
 
 def initial_state_lc(P, d, col, key, rc_on):
-    a, b, c, k = P[key]
-    tss = d.rAmbientTemp.values + d.on.values * (b * d.rSpeed.values + c) + k * rc_on
+    a, b, c, k = P[key][:4]
+    b2 = P[key][4] if len(P[key]) > 4 else 0.0
+    tss = d.rAmbientTemp.values + d.on.values * (b * d.rSpeed.values + c + b2 * d.rSpeed.values ** 2) + k * rc_on
     forced = lag(a, tss, 0.0)
     g = (1.0 - a) ** (np.arange(len(tss)) + 1.0)
     return initial_state(d[col].values, forced, g)
@@ -117,7 +124,7 @@ def belt_ratio(d):
     dt = d.nPlcTime.diff(W).values / 1000.0
     sp = d.rSpeed.values
     on_all = d.on.rolling(W + 1).min().values > 0
-    const = d.rSpeed.rolling(W + 1).std().values == 0
+    const = d.rSpeed.rolling(W + 1).std().values <= SPEED_TOL   # steady speed
     ok = on_all & const & (sp > 10) & (dt > 0)
     r = np.full(len(d), np.nan)
     r[ok] = dp[ok] / (dt[ok] * sp[ok])
@@ -129,7 +136,10 @@ def fit_temp(H, col, p0, loads):
     Fitting without it biases the time constant, because the unmeasured load is a large,
     slow disturbance on the motor temperature. The input-only residual reuses (a, b, c)."""
     res = lambda p: np.concatenate([sim_temp(p, d, col, L) - d[col].values for d, L in zip(H, loads)])
-    return least_squares(res, p0, bounds=([1e-5, 0, -20, -50], [0.5, 2, 20, 50])).x
+    lb, ub = [1e-5, 0, -20, -50], [0.5, 2, 20, 50]
+    if QUAD_SPEED:
+        p0 = list(p0) + [0.0]; lb = lb + [-1.0]; ub = ub + [1.0]
+    return least_squares(res, p0, bounds=(lb, ub)).x
 
 
 def fit(H):
@@ -141,13 +151,18 @@ def fit(H):
     loads = [current_residual_on(P, d) for d in H]
     P["motor"] = fit_temp(H, "rMotorTemp", [0.004, 0.5, 0.0, 5.0], loads).tolist()
     P["bearing"] = fit_temp(H, "rBearingTemp", [0.002, 0.17, 0.0, 1.0], loads).tolist()
-    res = lambda p: np.concatenate([(pred_vib(p, d) - d.rVibration.values)[d.on.values > 0] for d in H])
-    P["vib"] = least_squares(res, [0.2, 0.025], loss="soft_l1", f_scale=0.1).x.tolist()
-    # vibration sigma model: |r| * sqrt(pi/2) ~ s0 + s1 * level
-    lv = np.concatenate([pred_vib(P["vib"], d)[d.on.values > 0] for d in H])
-    ar = np.abs(np.concatenate([(d.rVibration.values - pred_vib(P["vib"], d))[d.on.values > 0] for d in H]))
-    A = np.c_[np.ones_like(lv), lv]
-    P["vib_sigma"] = np.linalg.lstsq(A, ar * np.sqrt(np.pi / 2), rcond=None)[0].tolist()
+    P["has_vib"] = bool(any(np.isfinite(d.rVibration.values).any() for d in H))
+    if not P["has_vib"]:
+        P["vib"], P["vib_sigma"] = [0.0, 0.0], [1.0, 0.0]
+    if P["has_vib"]:
+        res = lambda p: np.concatenate([(pred_vib(p, d) - d.rVibration.values)[d.on.values > 0] for d in H])
+        P["vib"] = least_squares(res, [0.2, 0.025], loss="soft_l1", f_scale=0.1).x.tolist()
+    if P["has_vib"]:
+        # vibration sigma model: |r| * sqrt(pi/2) ~ s0 + s1 * level
+        lv = np.concatenate([pred_vib(P["vib"], d)[d.on.values > 0] for d in H])
+        ar = np.abs(np.concatenate([(d.rVibration.values - pred_vib(P["vib"], d))[d.on.values > 0] for d in H]))
+        A = np.c_[np.ones_like(lv), lv]
+        P["vib_sigma"] = np.linalg.lstsq(A, ar * np.sqrt(np.pi / 2), rcond=None)[0].tolist()
     r = np.concatenate([belt_ratio(d) for d in H])
     P["ratio"] = float(np.nanmedian(r))
     # load compensation gains, regressed on train data
@@ -156,8 +171,11 @@ def fit(H):
     late = np.concatenate([np.nan_to_num(d.t_since_start.values, nan=-1) > 60 for d in H])
     m = on & late
     x = np.concatenate([q["load_vib"] for q in raw])[m]
-    y = np.concatenate([q["vib"] for q in raw])[m]
-    P["k_vib"] = float(np.dot(x, y) / np.dot(x, x))
+    if P["has_vib"]:
+        y = np.concatenate([q["vib"] for q in raw])[m]
+        P["k_vib"] = float(np.dot(x, y) / np.dot(x, x))
+    else:
+        P["k_vib"] = 0.0
     # belt creep grows with load but cannot go below zero (belt never outruns the drum):
     # ratio = 1 - max(0, creep0 + k * load_proxy)
     br = np.concatenate([belt_ratio(d) for d in H])[m]
@@ -185,10 +203,10 @@ def raw_residuals(P, d):
     xb = initial_state_lc(P, d, "rBearingTemp", "bearing", rc_on)
     guard = np.arange(len(d)) < INIT_N
     for ch, col, key, x0 in (("motor", "rMotorTemp", "motor", xm), ("bearing", "rBearingTemp", "bearing", xb)):
-        out[ch] = np.where(guard, np.nan, d[col].values - sim_temp(P[key][:3], d, col, x0=x0))
+        out[ch] = np.where(guard, np.nan, d[col].values - sim_temp(P[key], d, col, x0=x0))   # load=None: input-only
         out[ch + "_lc"] = np.where(guard, np.nan, d[col].values - sim_temp(P[key], d, col, rc_on, x0=x0))
     pv = pred_vib(P["vib"], d)
-    out["vib"] = np.where(on, d.rVibration.values - pv, np.nan)
+    out["vib"] = np.where(on & P.get("has_vib", True), d.rVibration.values - pv, np.nan)
     out["ratio"] = belt_ratio(d) - P["ratio"]
     out["load_vib"] = lag(1 - np.exp(-DT / 2.0), rc_on, 0.0)    # 2 s smoothing against noise and spikes
     out["vib_level"] = pv
@@ -226,11 +244,11 @@ def sigmas(P, R, H):
     m = np.concatenate([(d.on.values > 0) & (np.nan_to_num(d.t_since_start.values, nan=-1) > 60) for d in H])
     for ch in CHANNELS:
         x = np.concatenate([r[ch].values for r in R])[m]
-        S[ch] = float(np.nanstd(x))
+        S[ch] = float(np.nanstd(x)) if np.isfinite(x).any() else float("nan")
     s0, s1 = P["vib_sigma"]
     lvl = np.concatenate([r["vib_level"].values for r in R])[m]
     v = np.concatenate([r["vib_lc"].values for r in R])[m] / (s0 + s1 * lvl)
-    S["vib_lc_rel"] = float(np.nanstd(v))
+    S["vib_lc_rel"] = float(np.nanstd(v)) if np.isfinite(v).any() else float("nan")
     return S
 
 
@@ -249,6 +267,7 @@ def report(runs, R_oof, S):
         x = r[h].copy()
         x["t"] = d.t_since_start.values[h]
         x["speed"] = d.rSpeed.values[h]
+        x["speed"] = np.round(x["speed"])
         x.loc[~np.isin(x["speed"], [40, 50, 60, 70, 80]), "speed"] = np.nan
         x["run"] = rid
         rows.append(x)
@@ -284,8 +303,15 @@ def report(runs, R_oof, S):
     print(pr.quantile([0.05, 0.5, 0.95]).round(2).to_string())
 
 
-def main(data_dir):
-    split = pd.read_csv(os.path.join(HERE, "split_v3.csv"))
+def main(data_dir, tag="v3"):
+    global SPEED_TOL, QUAD_SPEED
+    if tag != "v3":
+        SPEED_TOL = 0.05
+        # Structure chosen by grouped CV on the Simscape TRAIN runs (tests.md A15): a speed^2 term
+        # cut the bearing residual 0.313 -> 0.086 degC and removed a +-1.2 sigma speed bias.
+        # The frozen v3 model stays linear (the PLC plant is linear in speed).
+        QUAD_SPEED = True
+    split = pd.read_csv(os.path.join(HERE, f"split_{tag}.csv"))
     runs = load_runs(data_dir, split)
     train = [k for k in split[split.split == "train"].run_id]
     healthy = {k: runs[k][runs[k].healthy] for k in train}
@@ -302,7 +328,9 @@ def main(data_dir):
     S = sigmas(P, [R_oof[k].iloc[:len(healthy[k])] for k in train], [healthy[k] for k in train])
     P["sigma"] = S
     P["fold_seed"], P["n_folds"] = FOLD_SEED, N_FOLDS
-    with open(os.path.join(HERE, "behaviour_v3.json"), "w") as fh:
+    if P.get("has_vib") is True:
+        del P["has_vib"]          # keep the v3 file byte-identical to the frozen one
+    with open(os.path.join(HERE, f"behaviour_{tag}.json"), "w") as fh:
         json.dump(P, fh, indent=2)
 
     out_dir = os.path.join(data_dir, "residuals")
@@ -327,14 +355,29 @@ def main(data_dir):
     print(f"  motor    tau {tau(P['motor'][0]):6.1f} s   b {P['motor'][1]:.4f}   c {P['motor'][2]:+.3f}   load gain {P['motor'][3]:.2f} degC/A")
     print(f"  bearing  tau {tau(P['bearing'][0]):6.1f} s   b {P['bearing'][1]:.4f}   c {P['bearing'][2]:+.3f}   load gain {P['bearing'][3]:.3f} degC/A")
     print(f"  current  tau {tau(P['current'][0]):6.2f} s   c0 {P['current'][1]:.3f}   c1 {P['current'][2]:.4f}")
-    print(f"  vib      v0 {P['vib'][0]:.3f}   v1 {P['vib'][1]:.4f}   sigma {P['vib_sigma'][0]:.3f} + {P['vib_sigma'][1]:.3f}*level")
+    if P.get("has_vib", True):
+        print(f"  vib      v0 {P['vib'][0]:.3f}   v1 {P['vib'][1]:.4f}   sigma {P['vib_sigma'][0]:.3f} + {P['vib_sigma'][1]:.3f}*level")
+    else:
+        print("  vib      not in the data (skipped)")
     print(f"  ratio    {P['ratio']:.4f}")
     print(f"  vib load gain {P['k_vib']:.3f} per A   belt creep {P['creep'][0]:.4f} + {P['creep'][1]:.4f} per A (>= 0)")
     report(runs, {k: R_oof[k] for k in train}, S)
-    print(f"\nwrote {os.path.join(HERE, 'behaviour_v3.json')} and {len(split)} files in {out_dir}")
+    print(f"\nwrote {os.path.join(HERE, f'behaviour_{tag}.json')} and {len(split)} files in {out_dir}")
 
+
+
+def parse_tag(argv):
+    """Optional '--tag NAME' (default v3) selects the file set: split_NAME.csv, behaviour_NAME.json, ..."""
+    argv = list(argv)
+    tag = "v3"
+    if "--tag" in argv:
+        i = argv.index("--tag")
+        tag = argv[i + 1]
+        del argv[i:i + 2]
+    return tag, argv
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    TAG, argv = parse_tag(sys.argv)
+    if len(argv) != 2:
         raise SystemExit("usage: python ml/behaviour_model.py data/v3")
-    main(sys.argv[1])
+    main(argv[1], TAG)

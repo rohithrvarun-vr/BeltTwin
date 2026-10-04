@@ -1,7 +1,8 @@
 """Pre-registered train/test split for campaign v3 (Phase 2).
 
-Usage:  python ml/make_split.py data/v3
-Writes ml/split_v3.csv (committed to git). Run ONCE, before any model is fitted.
+Usage:  python ml/make_split.py data/v3            (writes ml/split_v3.csv)
+        python ml/make_split.py data/simscape --tag sim   (writes ml/split_sim.csv)
+Writes ml/split_<tag>.csv (committed to git). Run ONCE, before any model is fitted.
 
 Rules (fixed 30 Sep 2026, before looking at any Phase 2 result):
   - jam, slip, overload: 15 train / 10 test each, spread evenly over speeds
@@ -17,7 +18,7 @@ SEED = 20260930
 N_TRAIN = {"jam": 15, "slip": 15, "overload": 15, "wear": 0,
            "healthy": 12, "healthy_change": 12, "soak": 6}
 
-def main(data_dir):
+def main(data_dir, tag="v3"):
     m = pd.read_csv(os.path.join(data_dir, "manifest.csv"))
     m = m[(m.status == "ok") & (m.stale_ticks == 0)].copy()
     rng = np.random.default_rng(SEED)
@@ -38,14 +39,26 @@ def main(data_dir):
             split[rid] = "train" if rid in picked else "test"
     out = m[["run_id", "kind", "speed"]].copy()
     out["split"] = out.run_id.map(split)
-    dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), "split_v3.csv")
+    dst = os.path.join(os.path.dirname(os.path.abspath(__file__)), f"split_{tag}.csv")
     if os.path.exists(dst):
         raise SystemExit(f"{dst} already exists. The split is pre-registered: do not regenerate it.")
     out.sort_values(["kind", "speed", "run_id"]).to_csv(dst, index=False)
     print(out.groupby(["kind", "split"]).size().unstack(fill_value=0))
     print("wrote", dst)
 
+
+def parse_tag(argv):
+    """Optional '--tag NAME' (default v3) selects the file set: split_NAME.csv, behaviour_NAME.json, ..."""
+    argv = list(argv)
+    tag = "v3"
+    if "--tag" in argv:
+        i = argv.index("--tag")
+        tag = argv[i + 1]
+        del argv[i:i + 2]
+    return tag, argv
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    TAG, argv = parse_tag(sys.argv)
+    if len(argv) != 2:
         raise SystemExit("usage: python ml/make_split.py data/v3")
-    main(sys.argv[1])
+    main(argv[1], TAG)

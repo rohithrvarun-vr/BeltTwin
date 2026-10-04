@@ -1,6 +1,7 @@
 """BeltTwin Phase 2, step 6: evaluate the FROZEN detectors on the TEST runs.
 
 Usage:  python ml/evaluate.py data/v3
+        python ml/evaluate.py data/simscape --tag sim   (own frozen files and own marker TEST_EVALUATED_sim.txt)
 Needs:  ml/split_v3.csv, ml/behaviour_v3.json, ml/detectors_v3.json, ml/iforest_v3.joblib,
         ml/rf_v3.joblib, data/v3/residuals/ (all from steps 4 and 5)
 
@@ -24,13 +25,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import detectors as det     # same feature, statistic and event definitions as step 5
 
-FROZEN = ["detectors_v3.json", "behaviour_v3.json", "iforest_v3.joblib", "rf_v3.joblib", "split_v3.csv"]
-MARKER = os.path.join(HERE, "TEST_EVALUATED.txt")
+def frozen_files(tag):
+    return [f"detectors_{tag}.json", f"behaviour_{tag}.json", f"iforest_{tag}.joblib", f"rf_{tag}.joblib", f"split_{tag}.csv"]
 
 
-def frozen_hash():
+def marker_file(tag):
+    return os.path.join(HERE, "TEST_EVALUATED.txt" if tag == "v3" else f"TEST_EVALUATED_{tag}.txt")
+
+
+def frozen_hash(tag="v3"):
     h = hashlib.sha256()
-    for f in FROZEN:
+    for f in frozen_files(tag):
         with open(os.path.join(HERE, f), "rb") as fh:
             h.update(f.encode()); h.update(fh.read())
     return h.hexdigest()[:16]
@@ -42,9 +47,10 @@ def poisson_ci(n, hours):
     return lo / hours, hi / hours
 
 
-def main(data_dir, which="test"):
+def main(data_dir, which="test", tag="v3"):
+    MARKER = marker_file(tag)
     if which == "test":
-        fh = frozen_hash()
+        fh = frozen_hash(tag)
         if os.path.exists(MARKER):
             prev = open(MARKER).read().split()[0]
             if prev != fh:
@@ -55,11 +61,12 @@ def main(data_dir, which="test"):
             with open(MARKER, "w") as m:
                 m.write(f"{fh} first test evaluation {datetime.datetime.now().isoformat(timespec='seconds')}\n")
 
-    split = pd.read_csv(os.path.join(HERE, "split_v3.csv"))
-    P = json.load(open(os.path.join(HERE, "behaviour_v3.json")))
-    cfg = json.load(open(os.path.join(HERE, "detectors_v3.json")))
-    mi = joblib.load(os.path.join(HERE, "iforest_v3.joblib"))
-    mr = joblib.load(os.path.join(HERE, "rf_v3.joblib"))
+    split = pd.read_csv(os.path.join(HERE, f"split_{tag}.csv"))
+    P = json.load(open(os.path.join(HERE, f"behaviour_{tag}.json")))
+    det.configure(P)
+    cfg = json.load(open(os.path.join(HERE, f"detectors_{tag}.json")))
+    mi = joblib.load(os.path.join(HERE, f"iforest_{tag}.joblib"))
+    mr = joblib.load(os.path.join(HERE, f"rf_{tag}.joblib"))
     runs = det.load(data_dir, split[split.split == which], P)
     L, phi, thr, deb = cfg["fixed_limits"], cfg["cusum"]["phi"], cfg["thresholds"], cfg["debounce"]
     h_col = list(mr.classes_).index(0)
@@ -104,12 +111,24 @@ def main(data_dir, which="test"):
     print(res.sort_values(["fault", "detector"]).to_string(index=False))
 
     out = pd.concat(per_run)[["detector", "run_id", "kind", "detected", "delay", "frac", "ttf"]]
-    dst = os.path.join(HERE, f"results_{which}_v3.csv")
+    dst = os.path.join(HERE, f"results_{which}_{tag}.csv")
     out.to_csv(dst, index=False, float_format="%.4g")
     print(f"\nwrote {dst}")
 
 
+
+def parse_tag(argv):
+    """Optional '--tag NAME' (default v3) selects the file set: split_NAME.csv, behaviour_NAME.json, ..."""
+    argv = list(argv)
+    tag = "v3"
+    if "--tag" in argv:
+        i = argv.index("--tag")
+        tag = argv[i + 1]
+        del argv[i:i + 2]
+    return tag, argv
+
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
+    TAG, argv = parse_tag(sys.argv)
+    if len(argv) not in (2, 3):
         raise SystemExit("usage: python ml/evaluate.py data/v3")
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else "test")
+    main(argv[1], argv[2] if len(argv) == 3 else "test", TAG)

@@ -1,6 +1,8 @@
 """BeltTwin Phase 2, step 5: four detectors, tuned on TRAIN runs only.
 
 Usage:  python ml/detectors.py data/v3
+        python ml/detectors.py data/simscape --tag sim   (behaviour_sim.json -> detectors_sim.json, ...)
+Without vibration in the data (Simscape), every vibration channel is left out of all four detectors.
 Needs:  ml/split_v3.csv, ml/behaviour_v3.json, data/v3/residuals/ (from behaviour_model.py)
 
 Detectors (each reduces to one statistic per sample and one threshold):
@@ -43,6 +45,16 @@ CUSUM_CH = ["z_current", "z_vib_lc", "z_ratio_lc", "z_motor_lc", "z_bearing_lc"]
 IF_CH = ["z_current", "z_motor", "z_bearing", "z_vib", "z_ratio", "z_motor_lc", "z_bearing_lc", "z_vib_lc", "z_ratio_lc"]
 RAW_CH = ["rMotorCurrent", "rMotorTemp", "rBearingTemp", "rVibration", "belt_ratio", "rSpeed"]
 FIXED_HIGH = ["rMotorCurrent", "rMotorTemp", "rBearingTemp", "rVibration"]
+
+
+def configure(P):
+    """Drop the vibration channels from every detector when the data has no vibration."""
+    global CUSUM_CH, IF_CH, RAW_CH, FIXED_HIGH
+    if not P.get("has_vib", True):
+        CUSUM_CH = [c for c in CUSUM_CH if "vib" not in c]
+        IF_CH = [c for c in IF_CH if "vib" not in c]
+        RAW_CH = [c for c in RAW_CH if c != "rVibration"]
+        FIXED_HIGH = [c for c in FIXED_HIGH if c != "rVibration"]
 DEBOUNCE = {"fixed": 4, "cusum": 1, "iforest": 3, "rf": 3}
 CLASSES = {"healthy": 0, "jam": 1, "slip": 2, "overload": 4}
 
@@ -252,9 +264,10 @@ def evaluate(runs, stats, thr):
 
 
 # ---------------------------------------------------------------- main
-def main(data_dir):
-    split = pd.read_csv(os.path.join(HERE, "split_v3.csv"))
-    P = json.load(open(os.path.join(HERE, "behaviour_v3.json")))
+def main(data_dir, tag="v3"):
+    split = pd.read_csv(os.path.join(HERE, f"split_{tag}.csv"))
+    P = json.load(open(os.path.join(HERE, f"behaviour_{tag}.json")))
+    configure(P)
     train_ids = list(split[split.split == "train"].run_id)
     runs = load(data_dir, split[split.split == "train"], P)
     print(f"train runs: {len(runs)}, healthy motor-on hours: {healthy_hours(runs):.2f}")
@@ -318,15 +331,27 @@ def main(data_dir):
     print(pd.DataFrame(summary).to_string(index=False))
 
     # final models on all train runs, for step 6
-    joblib.dump(fit_if(train_ids), os.path.join(HERE, "iforest_v3.joblib"))
+    joblib.dump(fit_if(train_ids), os.path.join(HERE, f"iforest_{tag}.joblib"))
     mr = fit_rf(train_ids)
-    joblib.dump(mr, os.path.join(HERE, "rf_v3.joblib"))
-    with open(os.path.join(HERE, "detectors_v3.json"), "w") as fh:
+    joblib.dump(mr, os.path.join(HERE, f"rf_{tag}.joblib"))
+    with open(os.path.join(HERE, f"detectors_{tag}.json"), "w") as fh:
         json.dump(cfg, fh, indent=2)
-    print(f"\nwrote detectors_v3.json, iforest_v3.joblib, rf_v3.joblib in {HERE}")
+    print(f"\nwrote detectors_{tag}.json, iforest_{tag}.joblib, rf_{tag}.joblib in {HERE}")
 
+
+
+def parse_tag(argv):
+    """Optional '--tag NAME' (default v3) selects the file set: split_NAME.csv, behaviour_NAME.json, ..."""
+    argv = list(argv)
+    tag = "v3"
+    if "--tag" in argv:
+        i = argv.index("--tag")
+        tag = argv[i + 1]
+        del argv[i:i + 2]
+    return tag, argv
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
+    TAG, argv = parse_tag(sys.argv)
+    if len(argv) != 2:
         raise SystemExit("usage: python ml/detectors.py data/v3")
-    main(sys.argv[1])
+    main(argv[1], TAG)

@@ -1,0 +1,38 @@
+{
+  "fa_per_hour": 0.5,
+  "fixed_limits": {
+    "rMotorCurrent": 9.9,
+    "rMotorTemp": 77.3,
+    "rBearingTemp": 41.1,
+    "belt_ratio": 0.9973868616847822
+  },
+  "cusum": {
+    "k": 0.5,
+    "clip": 4.0,
+    "channels": [
+      "z_current",
+      "z_ratio_lc",
+      "z_motor_lc",
+      "z_bearing_lc"
+    ],
+    "phi": {
+      "z_current": 0.9302871713429105,
+      "z_ratio_lc": 0.5735275656176375,
+      "z_motor_lc": 0.9684676313414193,
+      "z_bearing_lc": 0.005080184231677981
+    },
+    "whiten_above": 0.2
+  },
+  "debounce": {
+    "fixed": 4,
+    "cusum": 1,
+    "iforest": 3,
+    "rf": 3
+  },
+  "thresholds": {
+    "fixed": 1.0090654911066097,
+    "cusum": 38.92455965841202,
+    "iforest": 0.6396187189535155,
+    "rf": 0.8657774060423233
+  }
+}
