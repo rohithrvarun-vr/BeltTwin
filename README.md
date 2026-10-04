@@ -5,6 +5,7 @@ A TwinCAT 3 PLC simulates a conveyor with realistic sensors and injectable fault
 The project has two phases:
 - **Phase 1:** the end-to-end pipeline, a labelled dataset and a live Random Forest fault detector shown in Unity.
 - **Phase 2:** residual-based anomaly detection. A behaviour model of the healthy machine is identified from data, and four detectors are compared on a pre-registered test set, including a fault type that no detector saw during training.
+- **Robustness check:** the conveyor was rebuilt from MATLAB Simscape library physics, and the whole evaluation was repeated on that independent plant model.
 
 ![Unity twin, running](docs/unity_running.png)
 
@@ -23,7 +24,8 @@ The project has two phases:
 | **Latency** | PLC scan → MQTT subscriber **32 ms median / 47 ms p95**, measured with the PLC's own clock. It was 214 / 226 ms until I traced 72 % of it to two unsynchronised Node-RED timers and switched to publish-on-arrival. |
 | **Unseen fault** | On bearing wear, which was held out of all training and tuning, **CUSUM on load-compensated residuals detected 25 / 25 runs at a median 17 % of the time to failure**. A supervised Random Forest detected 11 / 25, at a median 97 %. Same false-alarm budget for all detectors. |
 | **Known faults** | On jam, slip and overload, the Random Forest is as good as CUSUM or better: best on jam (10 / 10, 0.62 s), tied on slip and overload. CUSUM misses 8 of 10 jams: a jam trips in 1–4 s, faster than its spike-protected sum can grow. |
-| **Data collection** | 150 / 150 runs `ok` in a 25-hour unattended campaign, with every PLC write verified through counters. One of 250 writes was silently lost and automatically retried. |
+| **Independent physics** | On a Simscape plant model (library physics, own pre-registered split, evaluated once), **CUSUM again detected all 25 unseen wear runs, at a median 16 % of the time to failure**; the Random Forest detected none. The behaviour model needed a speed² term there, chosen from training data. |
+| **Data collection** | 150 / 150 runs `ok` in a 25-hour unattended campaign, with every PLC write verified through counters. One of 250 writes was silently lost and automatically retried. A second campaign of 150 Simscape runs took 204 min. |
 
 ![Detector comparison on the test set](docs/detector_comparison.png)
 
@@ -73,9 +75,38 @@ All four are tuned on training runs only, to the same budget of 0.5 false alarms
 - Residuals and model scores on training runs are out-of-fold.
 - The test set was evaluated once. `ml/evaluate.py` stores a fingerprint of the frozen settings and refuses a second evaluation if they change.
 
+## Robustness check: the same evaluation on Simscape physics
+
+The Phase 2 result could be an artefact of a plant model written by the same person who designed the detectors. So the conveyor was rebuilt in MATLAB Simscape from library components, generated entirely by scripts in `simscape/`:
+
+- **Drive:** a DC motor with its own thermal model (winding resistance rises with temperature), PI speed control, a 20:1 gear.
+- **Belt:** driven by the drum through a friction clutch, which can slip.
+- **Load and heat:** a random material load; the drum bearing heated by its own friction.
+- **Faults:** the four faults as changes to physical parts: a braking force (jam), falling grip (slip), extra load (overload), extra bearing friction (wear).
+
+Component parameters are assumed and calibrated to the PLC model's steady state (7.25 A, motor +30 K, bearing +10.5 K at speed 60). Vibration is not modelled.
+
+| Bearing wear, unseen (25 test runs) | PLC model | Simscape |
+|---|---|---|
+| CUSUM on residuals | 25/25 at 17 % | **25/25 at 16 %** |
+| Fixed limits | 25/25 at 71 % | 17/25 at 77 % |
+| Isolation Forest | 20/25 at 56 % | 14/25 at 42 % |
+| Random Forest | 11/25 at 97 % | 0/25 |
+
+Fractions are median detection delay over time to failure.
+
+What Simscape showed that the PLC model hid:
+
+- **Energy conservation.** The PLC model heated a worn bearing without extra motor power; in Simscape the motor supplies it, slightly but measurably.
+- **Slip has no signature** until the belt's grip breaks away, at about 90 % of the time to failure. Every detector is late on slip there.
+- **Losses are not linear in speed** (bearing ∝ speed², copper ∝ current²). The linear behaviour model failed its acceptance check, and the training data selected a speed² term (bearing residual 0.31 → 0.086 °C).
+
+Details: `tests.md` A15.
+
 ## Limitations
 
-- **Simulated data, and I wrote the simulator.** In sensor model v3, wear heats the bearing in proportion from onset, which is exactly what a load-compensated bearing-temperature residual can see. Real bearing degradation is messier. The *direction* of the result (residual methods generalise to unseen faults, supervised classifiers don't) is credible. The *size* of the advantage should not be read as a real-world number.
+- **Simulated data.** I wrote the PLC simulator. The Simscape model uses library physics, but its component parameters are also mine. The wear result holds on both, partly because wear heats the bearing in any plausible physics. Real bearing degradation is messier. The *direction* of the result (residual methods generalise to unseen faults, supervised classifiers don't) is credible. The *size* of the advantage should not be read as a real-world number.
+- **The behaviour model's structure did not transfer unchanged:** on Simscape it needed a speed² term, selected from training data.
 - **Small samples:** 10 test runs per trained fault type, 25 wear runs, 9.9 healthy test hours. False-alarm rates have wide confidence intervals; the Random Forest reached 0.70 per hour on test (95 % CI 0.28–1.45).
 - **The PLC trip fires on hidden fault severity:** it is the ground-truth failure event, not a realistic protection relay.
 - **Each OPC UA variable is a separate read,** so one CSV row is not one PLC scan. Single-sample belt ratios are therefore noisy, and the detectors use a 2 s window.
@@ -92,6 +123,19 @@ python ml/evaluate.py data/v3            # frozen detectors on the test set
 
 Requires Python 3 with numpy, pandas, scipy, scikit-learn and joblib. The split (`ml/split_v3.csv`) is committed; `ml/make_split.py` refuses to overwrite it.
 
+The Simscape check (MATLAB R2026b with Simulink, Simscape, Simscape Electrical and Simscape Driveline):
+
+```
+% in MATLAB, folder simscape/
+build_conveyor_step5                 % build the parameterised model
+run_simscape_campaign('full')        % 150 runs to data/simscape (about 3.5 h)
+```
+```
+python ml/behaviour_model.py data/simscape --tag sim
+python ml/detectors.py data/simscape --tag sim
+python ml/evaluate.py data/simscape --tag sim
+```
+
 ## Repository
 
 | Path | Content |
@@ -99,9 +143,10 @@ Requires Python 3 with numpy, pandas, scipy, scikit-learn and joblib. The split 
 | `BeltTwin/` | TwinCAT 3 solution (PLC project `BeltLogic`, `MAIN.TcPOU`) |
 | `nodered/` | Node-RED flow and scenario runner |
 | `ml/` | Phase 1 RF and live detector; Phase 2 behaviour model, detectors, evaluation, frozen settings and results |
+| `simscape/` | MATLAB scripts that build the Simscape plant model step by step, and the campaign script |
 | `docs/` | Figures |
 | `tests.md` | Every measurement and result, with method and caveats |
 
 The Unity project is in a separate repository, `BeltTwinUnity`.
 
-**Stack:** TwinCAT 3 (Structured Text), OPC UA (TF6100), Node-RED, MQTT (Mosquitto), Unity (C#), Python (numpy, pandas, scipy, scikit-learn), Firebase.
+**Stack:** TwinCAT 3 (Structured Text), OPC UA (TF6100), Node-RED, MQTT (Mosquitto), Unity (C#), Python (numpy, pandas, scipy, scikit-learn), MATLAB / Simulink / Simscape (Electrical, Driveline), Firebase.

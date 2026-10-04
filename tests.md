@@ -9,7 +9,7 @@ System: TwinCAT 3 PLC (10 ms task) → OPC UA (TF6100) → Node-RED (4 Hz) → M
 
 ---
 
-# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A14)
+# Part A — Current system (sensor model v2: A1–A9; sensor model v3: A10–A14; Simscape: A15)
 
 ## A1. Sensor model v2 (PLC change, 24 Sep)
 
@@ -402,6 +402,86 @@ Script: `ml/evaluate.py`. Frozen settings from step 5, nothing fitted or tuned. 
 - **Small samples:** 10 runs per trained fault type, 25 wear runs, 9.94 healthy test hours. False-alarm rates have wide CIs.
 - **Matched budget, not matched rate:** all detectors were tuned to the same false-alarm budget on train; on test the realised rates differ (RF highest).
 - **The PLC trip is the oracle failure event** (hidden severity ≥ 0.8), not a protection relay.
+
+---
+
+## A15. Simscape plant model: robustness test on independent physics (3–4 Oct)
+
+**Question:** do the Phase 2 results only hold because the plant model (PLC sensor model v3) was written by the same person who designed the detectors? The conveyor was rebuilt from MathWorks library physics (MATLAB R2026b; Simulink, Simscape, Simscape Electrical, Simscape Driveline; university licence) and the same evaluation was repeated with a new pre-registered split.
+
+Scripts in `simscape/` (MATLAB, generate and wire the models themselves): `build_conveyor_step1.m` … `step4.m` (development steps), `build_conveyor_step5.m` (parameterised model), `run_simscape_campaign.m` (campaign and CSV export). Python: the existing pipeline with `--tag sim` (`split_sim.csv`, `behaviour_sim.json`, `detectors_sim.json`, `results_test_sim.csv`, `TEST_EVALUATED_sim.txt`).
+
+### Plant
+
+| Part | Simscape model | Calibration against the PLC model at speed 60 |
+|---|---|---|
+| Drive | DC motor (Simscape Electrical, built-in thermal variant: winding resistance rises with temperature), PI speed control, 1 ms voltage driver, gear 20:1 | Current 7.25 A (PLC map 7.25 A) |
+| Belt | Drum → friction clutch (drum–belt grip, can slip) → wheel and axle (r = 0.1 m) → belt mass 100 kg, roller friction | Belt ratio exactly 1 while the grip holds (no creep) |
+| Load | 30 N mean + two random first-order components (τ 20 s and 600 s, 12 N each) | Load–current correlation +1.00 (before sensor noise) |
+| Thermal | Motor winding (copper loss I²R); drum bearing heated by its own friction loss (bearing ≈ 5.4 W; seals/scrapers separate); ambient drift σ 1 °C, τ 1 h | Motor +30.6 K, τ ≈ 76 s; bearing +10.4 K (900 s run), τ 124 s |
+| Faults | Jam: braking force on the belt up to 1500 N. Slip: grip capacity × (1 − s). Overload: +300 N load. Wear: extra bearing friction up to 2.4 N·m. Hidden severity s as in v3 (jam linear, others quadratic, random duration ×0.5–2), trip at s = 0.8 | All four trip at their nominal times |
+
+Component physics is from the library; component parameters are assumed and calibrated to the PLC model's steady state. **Vibration is not modelled** (`rVibration` is NaN); all four detectors run without it.
+
+**Development findings (single runs):**
+- Slip has no signature until the grip falls below the demand (s ≈ 0.65): the belt ratio stays at exactly 1 for about 90 % of the time to trip, then breaks away.
+- Overload heats the motor more strongly than in the PLC model (copper loss ∝ I²).
+- **The PLC model broke energy conservation for wear:** it heated the bearing without extra motor power. In Simscape the motor supplies the bearing's extra friction loss (about +0.35 A at the trip, smaller than the load wander of σ ≈ 0.23 A).
+- First calibration error, fixed: attributing all drum friction (91.5 W) to the bearing made wear heat the motor to 110 °C. Split into bearing (5.4 W) and seals/scrapers.
+- Simulink issues fixed along the way: algebraic loops (1 ms driver, 50 ms load-direction lag, 0.5 s heat lag), Simulink-PS converter derivatives (input filtering), PI anti-windup chattering (zero-crossing detection off, adaptive algorithm).
+
+### Campaign
+
+150 / 150 runs `ok` in 204 min computing time (about 29.5 h simulated, about 9× faster than real time): the same plan as campaign v3. Per run: 420 s warm-up, healthy hold (faults 20–60 s, healthy 180 s, soak 1800 s), fault until 10 s after the trip. Sensors as v3 (current 0.05 A noise, 0.01 A resolution, spikes; temperatures 0.08 °C, 0.1 °C resolution). CSV format identical to `data/v3` (checked on a 5-run dry run). Dataset `BeltTwin_simscape_dataset_2026-10-04.zip`, not in git.
+
+**Difference from the PLC data:** the healthy belt ratio is far cleaner (σ 0.0001 per sample vs about 0.025), because the Simscape belt has no creep and all signals are sampled at the same instant (no non-atomic OPC UA reads).
+
+### Behaviour model
+
+The unchanged v3 model structure (steady-state temperature linear in speed) **failed** the acceptance check: speed-dependent bias up to ±1.2σ (bearing and motor), because bearing loss grows with speed² and copper loss with current². As with the model order in v3, the structure was selected on the **training** runs by grouped cross-validation:
+
+| Residual σ (out-of-fold, healthy) | Linear in speed | With speed² term |
+|---|---|---|
+| Bearing | 0.313 °C | **0.086 °C** (sensor noise floor) |
+| Motor, load-compensated | 1.26 °C | 0.49 °C |
+| Speed bias | up to ±1.2σ | below 0.2σ (one bin 0.22σ) |
+
+Identified bearing τ 120.2 s (plant 120 s). The bearing has no load gain (−0.003 °C/A), physically correct: the load sits on the rollers. The motor stays well above the noise floor (0.49 °C): I² heating and temperature-dependent resistance are not captured by the model. The v3 model stays linear and its frozen files are unchanged (checked byte-identical after the code change).
+
+### Detectors (train) and single test evaluation
+
+The same four detector designs, tuned on the Simscape training runs to 0.5 false alarms per healthy hour (vibration channels removed). Test set evaluated once (reference run on the project PC; RF threshold 0.8658).
+
+**False alarms** on 12.16 healthy test hours:
+
+| Detector | False alarms | Per hour | 95 % CI |
+|---|---|---|---|
+| fixed | 2 | 0.16 | [0.02, 0.59] |
+| cusum | 7 | 0.58 | [0.23, 1.19] |
+| iforest | 7 | 0.58 | [0.23, 1.19] |
+| rf | 2 | 0.16 | [0.02, 0.59] |
+
+**Detection** (detected / runs, median delay, median fraction of time to trip):
+
+| Fault | fixed | cusum | iforest | rf |
+|---|---|---|---|---|
+| jam | 10/10, 1.00 s (0.53) | 1/10, 3.25 s (0.81) | 0/10 | **10/10, 0.75 s (0.35)** |
+| slip | 5/10, 25.8 s (0.95) | 1/10, 44.5 s (0.94) | 3/10, 34.8 s (0.98) | 6/10, 19.4 s (0.93) |
+| overload | 10/10, 35.8 s (0.74) | 10/10, 33.5 s (0.65) | 8/10, 45.5 s (0.76) | **10/10, 33.1 s (0.53)** |
+| **wear (unseen)** | 17/25, 335 s (0.77) | **25/25, 87.3 s (0.16)** | 14/25, 164 s (0.42) | 0/25 |
+
+**Findings:**
+1. **The main result replicates on independent physics:** CUSUM on load-compensated residuals detected all 25 unseen wear runs at a median 16 % of time to trip (PLC data: 17 %). The Random Forest detected none (PLC data: 11/25).
+2. **On trained faults the Random Forest is again as good or better** (jam, overload).
+3. **Slip is late for every detector** (93–98 % of time to trip): physically there is no signature before the grip breaks away.
+4. **CUSUM is weaker on overload than on the PLC data** (0.65 vs 0.37): the load-compensated motor residual is less clean (0.49 °C, lag-1 autocorrelation 0.968, so it is pre-whitened).
+5. **False alarms:** CUSUM and Isolation Forest at 0.58 per hour, slightly above budget (CI includes it).
+
+**Limitations to state with these numbers:**
+- The behaviour model's structure (speed² term) had to be re-selected from the Simscape training data; the method transferred, the model structure did not.
+- Still simulated, and the Simscape component parameters were chosen and calibrated by the same person. The physics comes from the library, not the parameters.
+- Wear heats the bearing in any plausible physics, which favours a bearing-temperature residual in both models.
+- No vibration channel; the belt ratio is free of creep and pipeline artefacts.
 
 ---
 
