@@ -426,15 +426,15 @@ Component physics is from the library; component parameters are assumed and cali
 **Development findings (single runs):**
 - Slip has no signature until the grip falls below the demand (s ≈ 0.65): the belt ratio stays at exactly 1 for about 90 % of the time to trip, then breaks away.
 - Overload heats the motor more strongly than in the PLC model (copper loss ∝ I²).
-- **The PLC model broke energy conservation for wear:** it heated the bearing without extra motor power. In Simscape the motor supplies the bearing's extra friction loss (about +0.35 A at the trip, smaller than the load wander of σ ≈ 0.23 A).
+- **The PLC model broke energy conservation for wear:** it heated the bearing without extra motor power. In Simscape the motor supplies the bearing's extra friction loss (about +0.38 A at the trip, of the same order as the load wander, σ ≈ 0.23 A).
 - First calibration error, fixed: attributing all drum friction (91.5 W) to the bearing made wear heat the motor to 110 °C. Split into bearing (5.4 W) and seals/scrapers.
 - Simulink issues fixed along the way: algebraic loops (1 ms driver, 50 ms load-direction lag, 0.5 s heat lag), Simulink-PS converter derivatives (input filtering), PI anti-windup chattering (zero-crossing detection off, adaptive algorithm).
 
 ### Campaign
 
-150 / 150 runs `ok` in 204 min computing time (about 29.5 h simulated, about 9× faster than real time): the same plan as campaign v3. Per run: 420 s warm-up, healthy hold (faults 20–60 s, healthy 180 s, soak 1800 s), fault until 10 s after the trip. Sensors as v3 (current 0.05 A noise, 0.01 A resolution, spikes; temperatures 0.08 °C, 0.1 °C resolution). CSV format identical to `data/v3` (checked on a 5-run dry run). Dataset `BeltTwin_simscape_dataset_2026-10-04.zip`, not in git.
+150 / 150 runs `ok` in 204 min computing time (30.0 h simulated, about 9× faster than real time): the same plan as campaign v3. Per run: 420 s warm-up, healthy hold (faults 20–60 s, healthy 180 s, soak 1800 s), fault until 10 s after the trip. Sensors as v3 (current 0.05 A noise, 0.01 A resolution, spikes; temperatures 0.08 °C, 0.1 °C resolution). CSV format identical to `data/v3` (checked on a 5-run dry run). Dataset `BeltTwin_simscape_dataset_2026-10-04.zip`, not in git.
 
-**Difference from the PLC data:** the healthy belt ratio is far cleaner (σ 0.0001 per sample vs about 0.025), because the Simscape belt has no creep and all signals are sampled at the same instant (no non-atomic OPC UA reads).
+**Difference from the PLC data:** the healthy belt ratio is far cleaner (2 s-window residual σ 0.0003 vs 0.0068 on the PLC data), because the Simscape belt has no creep and all signals are sampled at the same instant (no non-atomic OPC UA reads).
 
 ### Behaviour model
 
