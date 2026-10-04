@@ -3,9 +3,9 @@
 System: TwinCAT 3 PLC (10 ms task) → OPC UA (TF6100) → Node-RED (4 Hz) → MQTT → Unity twin, plus CSV logging, scenario runner and live RF detector. All measurements were taken on a single PC (Windows, TwinCAT 4026.24, Node-RED 5.0.4, Unity 2022.3.61f1).
 
 **How to read this document.**
-- **Part A** is the current system. A1–A9 describe sensor model v2 (24 Sep 2026), which the Phase 1 dataset and ML results are based on. **A10–A11 describe sensor model v3 and the v3 runner (29 Sep 2026), which Phase 2 is based on.** A5 (latency) is current for both.
+- **Part A** is the current system. A1–A9 describe sensor model v2 (24 Sep 2026), which the Phase 1 dataset and ML results are based on. **A10–A14 describe sensor model v3 and Phase 2 (29 Sep – 2 Oct 2026); A15 the Simscape robustness check (3–4 Oct).** A5 (latency) is current for both.
 - **Part B** is the history: measurements on sensor model v1 (17–22 Sep). They're kept for traceability, and each one is marked as still valid or superseded.
-- "TODO" means not yet measured or tested. Don't quote those items anywhere.
+- "Not done" marks something that was not measured or tested. Don't quote those items anywhere.
 
 ---
 
@@ -31,7 +31,7 @@ These changes invalidate every earlier noise band and detection lead time. Trip 
 
 **The float stall explained** (why the old 35.977 °C wasn't 36.0): between 32 and 64 a REAL (float32) has a spacing of 2⁻¹⁸ ≈ 3.8×10⁻⁶. An update of error × K is lost once it falls below half that spacing. With K = 0.0000833 (bearing), the filter stops 0.023 °C short, and with K = 0.000167 (motor), 0.0114 °C short. Both shortfalls matched the observed values exactly.
 
-**Healthy steady state:** the new noise bands still need re-measuring from campaign healthy data. *(TODO)*
+**Healthy steady state:** the v2 noise bands were not re-measured; superseded by sensor model v3 (A10) and its measured residual noise (A12).
 
 **Persistence and maintenance verified (24 Sep):** the campaign run straight after a wear trip ran 328 s or more of warm-up without re-faulting, so maintenance cleared the wear.
 
@@ -156,7 +156,7 @@ With Unity playing, `Restart-Service mosquitto` produced NO DATA and a grey belt
 | of which speed-change runs | **6 / 13** | **0 / 13** |
 | Jam precision / recall (sample level) | 0.84 / 0.87 | 0.99 / 0.87 |
 
-**Finding:** the first model mistook commanded speed changes for faults. Current, vibration and temperatures all shift with speed, and the top feature (`rMotorCurrent_delta_sl`) spiked. Giving the model speed-trend features, which are legitimate operating context because the setpoint is commanded, removed those false alarms without slowing detection. **Caveat:** this fix was chosen after seeing the failures in the same cross-validation, so the "after" column is optimistic. *(TODO: confirm on about 10 fresh speed-change runs never used for training.)*
+**Finding:** the first model mistook commanded speed changes for faults. Current, vibration and temperatures all shift with speed, and the top feature (`rMotorCurrent_delta_sl`) spiked. Giving the model speed-trend features, which are legitimate operating context because the setpoint is commanded, removed those false alarms without slowing detection. **Caveat:** this fix was chosen after seeing the failures in the same cross-validation, so the "after" column is optimistic. *(Not done as a separate test; Phase 2 later evaluated the RF on a pre-registered test set with 8 unseen speed-change runs, A14.)*
 
 **Lead time over the PLC's own trip** (PLC trip time minus median detection delay): slip about 25 s, overload about 52 s, wear about 394 s. Jam gains only about 1.6 s, because it trips in 2 s. That's the sampling-rate limit (B6).
 
@@ -184,7 +184,7 @@ With Unity playing, `Restart-Service mosquitto` produced NO DATA and a grey belt
 
 **Cold-start miss (27 Sep, 11:18):** a jam injected 21 s after START was not detected. That's expected: the detector needs 30 s of Running data before it predicts at all, and a cold machine is outside the training distribution (see A8, limitation 3).
 
-**MQTT last will (`detector_offline`):** *(TODO: close the detector window with its X, not Ctrl+C, and confirm Unity shows "RF: detector offline".)*
+**MQTT last will (`detector_offline`):** *(Not tested.)*
 
 ---
 
@@ -218,7 +218,7 @@ Purpose: realism before Phase 2 (residual-based detection). The healthy plant (g
 - Jam injected from UaExpert: `nInjectCount` 0 → 1 at 10:19:19.262, `eState` 3 and `eFaultCode` 1 at 10:19:21.262 (2.0 s, inside 1–4 s). `rPosition` 102.5 (a multiple of 0.25). Temperatures on 0.1 °C steps. Current decayed smoothly to 0 after the trip.
 - After reset, motor temperature fell from 32.1 to 22 °C within about 20 min, consistent with the 60 s time constant.
 
-**Healthy v3 noise bands:** *(TODO: measure from campaign v3 healthy and soak runs.)*
+**Healthy v3 noise bands:** measured as behaviour-model residuals on the campaign's healthy data (A12).
 
 ---
 
@@ -557,7 +557,7 @@ This is the first sample outside the v1 healthy noise band, before the PLC trips
 | Overload | about 50 s | about 215 |
 | Wear | about 380 s | about 1600 |
 
-These were measured with noiseless temperatures and deterministic sinusoidal noise, so they overstate how detectable the faults are. *(TODO: re-derive from v2 campaign data.)*
+These were measured with noiseless temperatures and deterministic sinusoidal noise, so they overstate how detectable the faults are. *(Not re-derived; superseded by the Phase 2 test results, A14.)*
 
 **Still valid as a structural point:** jam is the limiting case, with only about 8 samples at 4 Hz between onset and trip. Detection is feasible, prediction is not. That's a sampling-rate limitation, and it should be stated as one.
 

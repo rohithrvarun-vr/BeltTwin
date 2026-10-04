@@ -141,7 +141,7 @@ python ml/evaluate.py data/simscape --tag sim
 | Path | Content |
 |---|---|
 | `BeltTwin/` | TwinCAT 3 solution (PLC project `BeltLogic`, `MAIN.TcPOU`) |
-| `nodered/` | Node-RED flow and scenario runner |
+| `nodered/` | Node-RED flow; `scenario_runner.js` (campaign v3, Phase 2) and `scenario_runner_resumable.js` (Phase 1 campaign) |
 | `ml/` | Phase 1 RF and live detector; Phase 2 behaviour model, detectors, evaluation, frozen settings and results |
 | `simscape/` | MATLAB scripts that build the Simscape plant model step by step, and the campaign script |
 | `docs/` | Figures |
